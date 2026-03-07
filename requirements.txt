@@ -1,0 +1,14 @@
+# Airflow providers
+apache-airflow-providers-postgres==5.10.0
+apache-airflow-providers-http==4.10.0
+
+# ClickHouse
+clickhouse-driver==0.2.7
+
+# Data processing
+pandas==2.2.0
+numpy==1.26.4
+
+# Utilities
+python-dotenv==1.0.1
+requests==2.31.0
