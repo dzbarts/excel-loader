@@ -24,14 +24,6 @@ class ConfigurationError(ExcelLoaderError):
     """Некорректная конфигурация запуска."""
     pass
 
-class DatabaseConnectionError(ExcelLoaderError):
-    """Проблема с подключением к базе данных."""
-    pass
-
-class DataInsertionError(ExcelLoaderError):
-    """Ошибка при вставке данных в базу."""
-    pass
-
 class DumpCreationError(ExcelLoaderError):
     """Ошибка при создании дампа данных."""
     pass
