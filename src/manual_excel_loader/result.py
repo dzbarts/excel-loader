@@ -1,17 +1,21 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
 
+
 @dataclass(frozen=True)
 class Ok(Generic[T]):
-    """Успешный результат валидации."""
+    """Успешный результат валидации одной ячейки."""
     value: T
+
 
 @dataclass(frozen=True)
 class Err:
     """Неуспешный результат с описанием причины."""
     message: str
 
-# Тип-псевдоним: результат это либо Ok, либо Err
-ValidationResult = Ok[T] | Err
+
+# Псевдоним для аннотации возвращаемого типа валидаторов
+CellResult = Ok[T] | Err
