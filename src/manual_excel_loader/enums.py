@@ -18,3 +18,7 @@ class DumpType(str, Enum):
 class TimestampField(str, Enum):
     WRITE_TS = "write_ts"
     LOAD_DTTM = "load_dttm"
+
+SUPPORTED_ENCODINGS = frozenset({
+    "utf-8", "cp1252", "windows-1252"
+})
