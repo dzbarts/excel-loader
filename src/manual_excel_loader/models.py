@@ -20,7 +20,7 @@ class LoaderConfig:
     table_name: str = "table_name"
     scheme_name: str = "scheme_name"
     dump_type: DumpType = DumpType.SQL
-    error_mode: ErrorMode = ErrorMode.RAISE
+    error_mode: ErrorMode = ErrorMode.IGNORE
     encoding_input: str = "utf-8"
     encoding_output: str = "utf-8"
     batch_size: int = 10
