@@ -1,16 +1,19 @@
-# src/manual_excel_loader/models.py
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
 from .enums import DatabaseType, ErrorMode, DumpType, TimestampField
 
 
 @dataclass
 class LoaderConfig:
     """Конфигурация одного запуска загрузчика."""
+
     input_file: Path
     db_type: DatabaseType
+
     sheet_name: Optional[str] = None
     skip_rows: int = 0
     skip_cols: int = 0
@@ -27,21 +30,28 @@ class LoaderConfig:
     wf_load_idn: Optional[str] = None
     is_strip: bool = False
     set_empty_str_to_null: bool = True
-    dtypes: Optional[list[str]] = None
+
+    # KEY CHANGE: dict[col_name, type_str] instead of list[str].
+    # This allows column order in DDL to differ from column order in Excel.
+    # Obtain from parse_ddl() or pass manually: {"id": "integer", "name": "text"}
+    # Columns in Excel but absent from dtypes are passed through without validation.
+    dtypes: Optional[dict[str, str]] = None
 
 
 @dataclass(frozen=True)
 class CellValidationError:
     """Одна ошибка валидации в конкретной ячейке."""
-    cell_name: str        # "B5"
-    cell_value: object    # исходное значение из Excel
-    expected_type: str    # "integer"
-    message: str          # что именно не так
+
+    cell_name: str    # "B5"
+    cell_value: object
+    expected_type: str
+    message: str
 
 
 @dataclass
 class FileValidationResult:
     """Итог валидации всего файла."""
+
     is_valid: bool = True
     errors: list[CellValidationError] = field(default_factory=list)
 
@@ -53,5 +63,6 @@ class FileValidationResult:
 @dataclass
 class LoadResult:
     """Minimal summary returned by load(). Not statistics — just facts."""
+
     rows_written: int
     output_path: Path

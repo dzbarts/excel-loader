@@ -12,10 +12,27 @@ from .writers.base import FileWriterConfig
 from .writers.csv_file import CsvFileWriter
 from .writers.sql_file import SqlFileWriter
 
+# Encodings we support for output files.
+# encoding_input is stored in config for future CSV-reader support,
+# but openpyxl ignores it (xlsx is binary).
+_SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
+    "utf-8", "utf-16", "utf-16-le", "utf-16-be",
+    "ascii", "latin1", "cp1252", "cp1251", "cp866",
+    "koi8-r", "koi8-u", "iso-8859-5",
+    "gbk", "big5", "shift_jis", "euc-jp", "euc-kr",
+})
 
 
+# ── Internal helpers ─────────────────────────────────────────────────────────
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+def _validate_config(config: LoaderConfig) -> None:
+    """Raise ConfigurationError for any invalid config values."""
+    if config.encoding_output.lower() not in _SUPPORTED_ENCODINGS:
+        raise ConfigurationError(
+            f"Unsupported encoding_output '{config.encoding_output}'. "
+            f"Supported: {sorted(_SUPPORTED_ENCODINGS)}"
+        )
+
 
 def _build_read_config(config: LoaderConfig) -> ExcelReadConfig:
     return ExcelReadConfig(
@@ -59,32 +76,76 @@ def _make_cell_name(row_idx: int, col_idx: int, skip_rows: int, skip_cols: int) 
     return f"{letter}{row}"
 
 
+def _build_validators(
+    headers: list[str],
+    dtypes: dict[str, str],
+    db_type: DatabaseType,
+) -> dict[str, object]:
+    """
+    Build a name→validator mapping for columns that appear in both
+    the Excel headers and the dtypes dict.
+
+    Columns in Excel but missing from dtypes → no validation (pass-through).
+    Columns in dtypes but missing from Excel → silently ignored.
+    """
+    from .validator import get_validator
+    return {
+        col: get_validator(dtype, db_type)
+        for col, dtype in dtypes.items()
+        if col in headers
+    }
+
+
 def _validate_row(
     row: tuple,
-    validators: list,
+    headers: list[str],
+    validators: dict[str, object],
     row_idx: int,
     config: LoaderConfig,
     result: FileValidationResult,
+    key_columns: frozenset[str] | None = None,
 ) -> tuple:
     """
-    Validate one row. Returns the (possibly coerced) output row.
-    Invalid cells become None; errors are recorded in *result*.
+    Validate one row using name-based validator lookup.
+
+    - Valid cells: converted value (e.g. "2024-01-01" for a date).
+    - Invalid cells: None; error recorded in *result*.
+    - Columns without a validator: value passed through unchanged.
+    - Key columns with None value: recorded as key-null error.
     """
-    from .result import Ok  # local import avoids circular at module level
+    from .result import Ok
 
     output = []
-    for col_idx, (value, validate) in enumerate(zip(row, validators)):
+    for col_idx, (col_name, value) in enumerate(zip(headers, row)):
+        validate = validators.get(col_name)
+
+        if validate is None:
+            # No validator for this column — pass through as-is
+            output.append(value)
+            continue
+
         cell_result = validate(value)
+
         if isinstance(cell_result, Ok):
-            output.append(cell_result.value)
+            converted = cell_result.value
+            # Key-column NULL check
+            if key_columns and col_name in key_columns and converted is None:
+                result.add_error(CellValidationError(
+                    cell_name=_make_cell_name(row_idx, col_idx, config.skip_rows, config.skip_cols),
+                    cell_value=value,
+                    expected_type=config.dtypes[col_name],
+                    message="key column must not be NULL",
+                ))
+            output.append(converted)
         else:
             output.append(None)
             result.add_error(CellValidationError(
                 cell_name=_make_cell_name(row_idx, col_idx, config.skip_rows, config.skip_cols),
                 cell_value=value,
-                expected_type=config.dtypes[col_idx],
+                expected_type=config.dtypes[col_name],
                 message=cell_result.message,
             ))
+
     return tuple(output)
 
 
@@ -104,17 +165,14 @@ def _append_extra_columns(
 ) -> tuple:
     """Append timestamp and wf_load_idn columns if configured."""
     row = list(row)
-    if config.timestamp and config.timestamp.value in headers:
-        # already present in data — don't duplicate
-        pass
-    elif config.timestamp:
+    if config.timestamp and config.timestamp.value not in headers:
         row.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     if config.wf_load_idn:
         row.append(config.input_file.name)
     return tuple(row)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def load(config: LoaderConfig) -> LoadResult:
     """
@@ -123,8 +181,8 @@ def load(config: LoaderConfig) -> LoadResult:
     Error modes:
         IGNORE  — write rows as-is, no validation
         COERCE  — validate; replace invalid cells with NULL, always write
-        VERIFY  — validate; raise DataValidationError if any errors found, do not write
-        RAISE   — validate; replace invalid cells with NULL, raise if any errors found
+        VERIFY  — validate; raise DataValidationError if any errors, do not write
+        RAISE   — validate; replace invalid cells with NULL, raise if any errors
 
     Args:
         config: Full loader configuration.
@@ -133,56 +191,58 @@ def load(config: LoaderConfig) -> LoadResult:
         LoadResult with rows_written and output_path.
 
     Raises:
-        ConfigurationError: if dtypes are required but not provided.
+        ConfigurationError: if config is invalid or dtypes are required but missing.
         DataValidationError: if error_mode is VERIFY or RAISE and errors were found.
         FileReadError: if the Excel file cannot be read.
         HeaderValidationError: if headers are invalid.
     """
-    needs_validation = config.error_mode in (
-        ErrorMode.VERIFY, ErrorMode.RAISE, ErrorMode.COERCE
-    )
+    _validate_config(config)
 
+    needs_validation = config.error_mode in (
+        ErrorMode.VERIFY,
+        ErrorMode.RAISE,
+        ErrorMode.COERCE,
+    )
     if needs_validation and not config.dtypes:
         raise ConfigurationError(
             "dtypes must be provided when error_mode is not IGNORE."
         )
 
-    # ── 1. Read ───────────────────────────────────────────────────────────────
+    # ── 1. Read ──────────────────────────────────────────────────────────────
     sheet = read_excel(_build_read_config(config))
 
-    # Build extra headers for timestamp / wf_load_idn
+    # Build final header list (data headers + any extra columns we append)
     headers = list(sheet.headers)
     if config.timestamp and config.timestamp.value not in headers:
         headers.append(config.timestamp.value)
     if config.wf_load_idn:
         headers.append("wf_load_idn")
 
-    # ── 2. Build validators ───────────────────────────────────────────────────
-    validators = []
-    if needs_validation:
-        for dtype in config.dtypes:
-            validators.append(get_validator(dtype, config.db_type))
+    # ── 2. Build validators (name-based, order-independent) ──────────────────
+    validators: dict[str, object] = {}
+    if needs_validation and config.dtypes:
+        validators = _build_validators(sheet.headers, config.dtypes, config.db_type)
 
-    # ── 3. Process rows ───────────────────────────────────────────────────────
+    # ── 3. Process rows ──────────────────────────────────────────────────────
     validation_result = FileValidationResult()
 
     def _processed_rows():
         for row_idx, raw_row in enumerate(sheet.rows):
             row = _apply_row_transforms(raw_row, config)
-
             if needs_validation:
-                row = _validate_row(row, validators, row_idx, config, validation_result)
-
+                row = _validate_row(
+                    row, sheet.headers, validators,
+                    row_idx, config, validation_result,
+                )
             row = _append_extra_columns(row, sheet.headers, config)
             yield row
 
-    # ── 4. Write ──────────────────────────────────────────────────────────────
+    # ── 4. Write ─────────────────────────────────────────────────────────────
     output_path = _resolve_output_path(config)
-
     rows_written = 0
 
     if config.error_mode == ErrorMode.VERIFY:
-        # consume rows only for validation, do not write
+        # Consume rows for validation only — no file produced
         for _ in _processed_rows():
             rows_written += 1
         if not validation_result.is_valid:
@@ -190,7 +250,6 @@ def load(config: LoaderConfig) -> LoadResult:
                 f"Validation failed with {len(validation_result.errors)} error(s).",
                 validation_result,
             )
-        # VERIFY succeeded — no file produced
         return LoadResult(rows_written=rows_written, output_path=output_path)
 
     writer_config = _build_writer_config(config, output_path)
