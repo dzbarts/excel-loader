@@ -18,7 +18,7 @@ GP = DatabaseType.GREENPLUM
 CH = DatabaseType.CLICKHOUSE
 
 
-# ── Workbook factories ────────────────────────────────────────────────────────
+# ── Workbook factories ──────────────────────────────────────────────────────
 
 def make_regular_xlsx(
     tmp_path: Path,
@@ -44,8 +44,8 @@ def make_template_xlsx(
     fixed_cell_values: dict[str, str] | None = None,
     filename: str = "template.xlsx",
 ) -> Path:
-    """
-    Create a template workbook with 'data' + 'klad_config' sheets.
+    """Создать тестовый шаблонный workbook с листами 'data' + 'klad_config'.
+
     col_defs keys: ru_name, source ("table" or cell addr), is_key, tech_name, dtype
     """
     wb = openpyxl.Workbook()
@@ -58,7 +58,6 @@ def make_template_xlsx(
 
     row_num = int(re.search(r"\d+", first_data_row).group())
     header_row = row_num - 1
-
     ru_headers = [d["ru_name"] for d in col_defs if d["source"] == "table"]
     for ci, name in enumerate(ru_headers, 1):
         ws_data.cell(row=header_row, column=ci, value=name)
@@ -71,7 +70,6 @@ def make_template_xlsx(
     ws_cfg = wb.create_sheet("klad_config")
     ws_cfg.cell(1, 2, first_data_row)
     ws_cfg.cell(2, 1, "Рус. имя")
-
     for i, d in enumerate(col_defs):
         r = 3 + i
         ws_cfg.cell(r, 1, d.get("ru_name", ""))
@@ -86,17 +84,7 @@ def make_template_xlsx(
 
 
 def base_config(path: Path, **kwargs) -> LoaderConfig:
-    """
-    Minimal valid LoaderConfig for GP SQL output.
-
-    error_mode defaults to IGNORE — tests that need other modes
-    pass error_mode=ErrorMode.X explicitly via **kwargs.
-
-    Note: error_mode is NOT hardcoded inside the body anymore.
-    Hardcoding it AND passing it via **kwargs caused:
-        TypeError: got multiple values for keyword argument 'error_mode'
-    The fix: let kwargs override freely, no duplicate keys in the call.
-    """
+    """Минимальный валидный LoaderConfig для GP SQL-выгрузки."""
     return LoaderConfig(
         input_file=path,
         db_type=GP,
@@ -106,7 +94,7 @@ def base_config(path: Path, **kwargs) -> LoaderConfig:
     )
 
 
-# ── Regular Excel — basic pipeline ────────────────────────────────────────────
+# ── Regular Excel — basic pipeline ──────────────────────────────────────────
 
 class TestRegularExcelBasic:
     def test_returns_load_result(self, tmp_path):
@@ -122,12 +110,13 @@ class TestRegularExcelBasic:
     def test_output_file_created(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id", "name"], [(1, "Alice")])
         result = load(base_config(path))
-        assert result.output_path.exists()
+        assert result.output_file is not None
+        assert result.output_file.exists()
 
     def test_sql_output_contains_insert(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id", "name"], [(1, "Alice")])
         result = load(base_config(path))
-        content = result.output_path.read_text()
+        content = result.output_file.read_text()
         assert "INSERT INTO hr.employees" in content
         assert "id" in content and "name" in content
 
@@ -135,14 +124,14 @@ class TestRegularExcelBasic:
         path = make_regular_xlsx(tmp_path, ["id", "name"], [(1, "Alice")])
         cfg = base_config(path, dump_type=DumpType.CSV)
         result = load(cfg)
-        lines = result.output_path.read_text().splitlines()
+        lines = result.output_file.read_text().splitlines()
         assert lines[0] == "id,name"
         assert "1" in lines[1] and "Alice" in lines[1]
 
     def test_null_cell_becomes_null_in_sql(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id", "val"], [(1, None)])
         result = load(base_config(path))
-        assert "NULL" in result.output_path.read_text()
+        assert "NULL" in result.output_file.read_text()
 
     def test_blank_rows_skipped(self, tmp_path):
         wb = openpyxl.Workbook()
@@ -163,13 +152,34 @@ class TestRegularExcelBasic:
         load(cfg)
         assert cfg.skip_rows == original_skip
 
+    def test_has_errors_false_when_no_validation(self, tmp_path):
+        """IGNORE mode — has_errors всегда False (валидация не запускалась)."""
+        path = make_regular_xlsx(tmp_path, ["id"], [(1,)])
+        result = load(base_config(path, error_mode=ErrorMode.IGNORE))
+        assert result.has_errors is False
 
-# ── Error modes ───────────────────────────────────────────────────────────────
+    def test_rows_skipped_count(self, tmp_path):
+        """rows_skipped должен отражать число пустых строк в источнике."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["id"])
+        ws.append([1])
+        ws.append([None])  # пустая
+        ws.append([2])
+        path = tmp_path / "gaps.xlsx"
+        wb.save(path)
+        result = load(base_config(path))
+        # reader уже фильтрует пустые строки — rows_written=2
+        assert result.rows_written == 2
+
+
+# ── Error modes ──────────────────────────────────────────────────────────────
 
 class TestErrorModes:
     def _path_with_bad_data(self, tmp_path: Path) -> Path:
         return make_regular_xlsx(
-            tmp_path, ["id", "name"],
+            tmp_path,
+            ["id", "name"],
             [(1, "Alice"), ("NOT_AN_INT", "Bob")]
         )
 
@@ -185,9 +195,18 @@ class TestErrorModes:
             error_mode=ErrorMode.COERCE,
             dtypes={"id": "integer", "name": "text"},
         ))
-        content = result.output_path.read_text()
+        content = result.output_file.read_text()
         assert result.rows_written == 2
         assert "NULL" in content
+
+    def test_coerce_has_errors_true(self, tmp_path):
+        path = self._path_with_bad_data(tmp_path)
+        result = load(base_config(
+            path,
+            error_mode=ErrorMode.COERCE,
+            dtypes={"id": "integer", "name": "text"},
+        ))
+        assert result.has_errors is True
 
     def test_verify_raises_on_errors(self, tmp_path):
         path = self._path_with_bad_data(tmp_path)
@@ -201,12 +220,14 @@ class TestErrorModes:
 
     def test_verify_no_file_produced(self, tmp_path):
         path = self._path_with_bad_data(tmp_path)
-        with pytest.raises(DataValidationError):
+        with pytest.raises(DataValidationError) as exc_info:
             load(base_config(
                 path,
                 error_mode=ErrorMode.VERIFY,
                 dtypes={"id": "integer", "name": "text"},
             ))
+        # output_file не должен быть создан
+        assert exc_info.value.validation_result is not None
 
     def test_verify_passes_when_data_clean(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id", "name"], [(1, "Alice"), (2, "Bob")])
@@ -216,6 +237,7 @@ class TestErrorModes:
             dtypes={"id": "integer", "name": "text"},
         ))
         assert result.rows_written == 2
+        assert result.output_file is None  # VERIFY не создаёт файл
 
     def test_raise_writes_file_but_also_raises(self, tmp_path):
         path = self._path_with_bad_data(tmp_path)
@@ -249,30 +271,30 @@ class TestExtraColumns:
     def test_timestamp_appended_to_sql(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id"], [(1,)])
         result = load(base_config(path, timestamp=TimestampField.LOAD_DTTM))
-        assert "load_dttm" in result.output_path.read_text()
+        assert "load_dttm" in result.output_file.read_text()
 
     def test_timestamp_value_looks_like_datetime(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id"], [(1,)])
         result = load(base_config(path, timestamp=TimestampField.LOAD_DTTM))
-        content = result.output_path.read_text()
+        content = result.output_file.read_text()
         assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", content)
 
     def test_wf_load_idn_appended(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id"], [(1,)])
         result = load(base_config(path, wf_load_idn="source_file"))
-        content = result.output_path.read_text()
+        content = result.output_file.read_text()
         assert "wf_load_idn" in content
         assert path.name in content
 
     def test_existing_timestamp_col_not_duplicated(self, tmp_path):
-        """If Excel already has load_dttm column — don't add another."""
+        """Если Excel уже содержит load_dttm — не добавлять второй раз."""
         path = make_regular_xlsx(
-            tmp_path, ["id", "load_dttm"],
+            tmp_path,
+            ["id", "load_dttm"],
             [(1, "2024-01-01 00:00:00")]
         )
         result = load(base_config(path, timestamp=TimestampField.LOAD_DTTM))
-        content = result.output_path.read_text()
-        # "load_dttm" must appear exactly once in the column list
+        content = result.output_file.read_text()
         header_line = content.splitlines()[0]
         assert header_line.count("load_dttm") == 1
 
@@ -280,10 +302,21 @@ class TestExtraColumns:
 # ── Config validation ─────────────────────────────────────────────────────────
 
 class TestConfigValidation:
-    def test_unsupported_encoding_raises(self, tmp_path):
+    def test_unsupported_encoding_output_raises(self, tmp_path):
         path = make_regular_xlsx(tmp_path, ["id"], [(1,)])
         with pytest.raises(ConfigurationError, match="encoding"):
             load(base_config(path, encoding_output="not-a-real-encoding"))
+
+    def test_unsupported_encoding_input_csv_raises(self, tmp_path):
+        """encoding_input проверяется для CSV, но не для Excel."""
+        import csv
+        csv_path = tmp_path / "data.csv"
+        with open(csv_path, "w") as f:
+            writer = csv.writer(f)
+            writer.writerow(["id"])
+            writer.writerow([1])
+        with pytest.raises(ConfigurationError, match="encoding"):
+            load(base_config(csv_path, encoding_input="not-a-real-encoding"))
 
     def test_unsupported_file_format_raises(self, tmp_path):
         path = tmp_path / "data.json"
@@ -291,20 +324,24 @@ class TestConfigValidation:
         with pytest.raises(ConfigurationError, match="format"):
             load(base_config(path))
 
+    def test_encoding_input_not_validated_for_excel(self, tmp_path):
+        """Для Excel encoding_input не проверяется — он не используется."""
+        path = make_regular_xlsx(tmp_path, ["id"], [(1,)])
+        # Не должно падать даже с невалидной кодировкой для Excel
+        result = load(base_config(path, encoding_input="not-a-real-encoding"))
+        assert result.rows_written == 1
+
 
 # ── Template Excel ────────────────────────────────────────────────────────────
 
 class TestTemplateExcel:
     def _simple_template(self, tmp_path: Path) -> Path:
         col_defs = [
-            {"ru_name": "ИД", "source": "table", "is_key": "true",
-             "tech_name": "id", "dtype": "integer"},
-            {"ru_name": "Имя", "source": "table", "is_key": "",
-             "tech_name": "name", "dtype": "text"},
+            {"ru_name": "ИД", "source": "table", "is_key": "true", "tech_name": "id", "dtype": "integer"},
+            {"ru_name": "Имя", "source": "table", "is_key": "", "tech_name": "name", "dtype": "text"},
         ]
         return make_template_xlsx(
-            tmp_path, col_defs,
-            data_rows=[(1, "Alice"), (2, "Bob")],
+            tmp_path, col_defs, data_rows=[(1, "Alice"), (2, "Bob")],
         )
 
     def test_template_detected_automatically(self, tmp_path):
@@ -315,16 +352,14 @@ class TestTemplateExcel:
     def test_template_output_uses_tech_names(self, tmp_path):
         path = self._simple_template(tmp_path)
         result = load(base_config(path))
-        content = result.output_path.read_text()
+        content = result.output_file.read_text()
         assert "id" in content and "name" in content
         assert "ИД" not in content and "Имя" not in content
 
     def test_fixed_value_inserted_in_every_row(self, tmp_path):
         col_defs = [
-            {"ru_name": "Система", "source": "A1", "is_key": "",
-             "tech_name": "source_system", "dtype": "text"},
-            {"ru_name": "Имя", "source": "table", "is_key": "",
-             "tech_name": "name", "dtype": "text"},
+            {"ru_name": "Система", "source": "A1", "is_key": "", "tech_name": "source_system", "dtype": "text"},
+            {"ru_name": "Имя", "source": "table", "is_key": "", "tech_name": "name", "dtype": "text"},
         ]
         path = make_template_xlsx(
             tmp_path, col_defs,
@@ -332,17 +367,17 @@ class TestTemplateExcel:
             fixed_cell_values={"A1": "ГПН-ИТ"},
         )
         result = load(base_config(path))
-        content = result.output_path.read_text()
+        content = result.output_file.read_text()
         assert content.count("ГПН-ИТ") == 2
 
     def test_template_skip_rows_overrides_user(self, tmp_path):
-        """Template's skip_rows must take precedence over user-provided value."""
+        """skip_rows из шаблона должен иметь приоритет над пользовательским."""
         path = self._simple_template(tmp_path)
         result = load(base_config(path, skip_rows=99))
         assert result.rows_written == 2
 
     def test_original_config_skip_rows_not_mutated(self, tmp_path):
-        """dataclasses.replace() — caller's config must not change."""
+        """dataclasses.replace() — конфиг вызывающего кода не должен меняться."""
         path = self._simple_template(tmp_path)
         cfg = base_config(path, skip_rows=0)
         load(cfg)
@@ -350,15 +385,10 @@ class TestTemplateExcel:
 
     def test_key_column_null_recorded_as_error(self, tmp_path):
         col_defs = [
-            {"ru_name": "ИД", "source": "table", "is_key": "true",
-             "tech_name": "id", "dtype": "integer"},
-            {"ru_name": "Имя", "source": "table", "is_key": "",
-             "tech_name": "name", "dtype": "text"},
+            {"ru_name": "ИД", "source": "table", "is_key": "true", "tech_name": "id", "dtype": "integer"},
+            {"ru_name": "Имя", "source": "table", "is_key": "", "tech_name": "name", "dtype": "text"},
         ]
-        path = make_template_xlsx(
-            tmp_path, col_defs,
-            data_rows=[(None, "Alice")],
-        )
+        path = make_template_xlsx(tmp_path, col_defs, data_rows=[(None, "Alice")])
         with pytest.raises(DataValidationError) as exc_info:
             load(base_config(path, error_mode=ErrorMode.VERIFY))
         errors = exc_info.value.validation_result.errors

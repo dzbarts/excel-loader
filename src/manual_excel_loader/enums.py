@@ -1,24 +1,29 @@
-# src/excel_loader/enums.py
+"""Перечисления для excel-loader.
+
+Все Enum наследуют str, поэтому их значения можно сравнивать со строками
+и сериализовывать в JSON без дополнительных преобразований.
+"""
+
 from enum import Enum
+
 
 class DatabaseType(str, Enum):
     GREENPLUM = "greenplum"
     CLICKHOUSE = "clickhouse"
 
+
 class ErrorMode(str, Enum):
-    RAISE = "raise"      # проверить и упасть
-    COERCE = "coerce"    # заменить ошибки на NULL
-    IGNORE = "ignore"    # выгрузить как есть
-    VERIFY = "verify"    # только проверить, не выгружать
+    RAISE = "raise"    # проверить; при ошибках — поднять исключение
+    COERCE = "coerce"  # заменить ошибочные ячейки на NULL, продолжить
+    IGNORE = "ignore"  # выгрузить как есть, без валидации
+    VERIFY = "verify"  # только проверить, без выгрузки
+
 
 class DumpType(str, Enum):
     SQL = "sql"
     CSV = "csv"
 
+
 class TimestampField(str, Enum):
     WRITE_TS = "write_ts"
     LOAD_DTTM = "load_dttm"
-
-SUPPORTED_ENCODINGS = frozenset({
-    "utf-8", "cp1252", "windows-1252"
-})

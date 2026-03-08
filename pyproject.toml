@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "manual-excel-loader"
 version = "0.1.0"
-description = "Excel → SQL/CSV loader with data validation for GreenPlum and ClickHouse"
+description = "Excel/CSV/SQL → SQL/CSV loader with data validation for GreenPlum and ClickHouse"
 requires-python = ">=3.10"
 dependencies = [
     "openpyxl>=3.1",
@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
+    "ruff>=0.4",
 ]
 
 [tool.setuptools.packages.find]
@@ -31,3 +32,10 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP"]
+
+[tool.coverage.run]
+source = ["src/manual_excel_loader"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true

@@ -1,24 +1,28 @@
 """
 DAG: excel_loader
 =================
+
 Параметризованный запуск загрузчика Excel → GP/CH из Airflow UI.
 
 Запуск через UI: Trigger DAG w/ config → вставляем JSON с параметрами.
-Пример конфига:
-{
-    "input_file": "/data/uploads/my_file.xlsx",
-    "db_type": "gp",
-    "table_name": "my_table",
-    "scheme_name": "my_schema",
-    "dump_type": "sql",
-    "error_mode": "raise",
-    "dtypes_ddl": "CREATE TABLE t (id integer, name text, dt date)",
-    "timestamp": "load_dttm",
-    "batch_size": 500,
-    "skip_rows": 0,
-    "skip_cols": 0
-}
+
+Пример конфига::
+
+    {
+        "input_file": "/data/uploads/my_file.xlsx",
+        "db_type": "gp",
+        "table_name": "my_table",
+        "scheme_name": "my_schema",
+        "dump_type": "sql",
+        "error_mode": "raise",
+        "dtypes_ddl": "CREATE TABLE t (id integer, name text, dt date)",
+        "timestamp": "load_dttm",
+        "batch_size": 500,
+        "skip_rows": 0,
+        "skip_cols": 0
+    }
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,8 +36,8 @@ from airflow.utils.email import send_email
 
 log = logging.getLogger(__name__)
 
-# ── Алиасы db_type для Airflow UI → внутренние enum-значения ─────────────────
-# В UI показываем короткие "gp"/"ch", но DatabaseType ожидает полные значения
+# Алиасы db_type для Airflow UI → внутренние enum-значения.
+# В UI показываем короткие "gp"/"ch", но DatabaseType ожидает полные значения.
 _DB_TYPE_ALIASES: dict[str, str] = {
     "gp": "greenplum",
     "ch": "clickhouse",
@@ -41,8 +45,7 @@ _DB_TYPE_ALIASES: dict[str, str] = {
     "clickhouse": "clickhouse",
 }
 
-
-# ── DAG-level defaults ────────────────────────────────────────────────────────
+# ── DAG-level defaults ──────────────────────────────────────────────────────
 
 default_args = {
     "owner": "data-engineering",
@@ -55,7 +58,7 @@ DAG_PARAMS = {
     "input_file": Param(
         default="",
         type="string",
-        description="Абсолютный путь к входящему Excel-файлу",
+        description="Абсолютный путь к входящему файлу (.xlsx, .xls, .xlsm, .csv, .tsv, .sql)",
     ),
     "db_type": Param(
         default="gp",
@@ -69,8 +72,8 @@ DAG_PARAMS = {
         default="raise",
         enum=["raise", "coerce", "ignore", "verify"],
         description=(
-            "raise  – проверить и сохранить только валидные строки;\n"
-            "coerce – заменить ошибки NULL;\n"
+            "raise  – проверить; при ошибках task failed + retry;\n"
+            "coerce – заменить ошибки NULL, продолжить;\n"
             "ignore – выгрузить как есть;\n"
             "verify – только проверить, без выгрузки."
         ),
@@ -92,6 +95,19 @@ DAG_PARAMS = {
     "wf_load_idn": Param(default=None, type=["string", "null"]),
     "max_row": Param(default=None, type=["integer", "null"]),
     "delimiter": Param(default=",", type="string"),
+    "encoding_input": Param(
+        default="utf-8",
+        type="string",
+        description=(
+            "Кодировка входящего файла. "
+            "Применяется только для CSV/TSV/SQL; для Excel игнорируется."
+        ),
+    ),
+    "encoding_output": Param(
+        default="utf-8",
+        type="string",
+        description="Кодировка создаваемого SQL/CSV файла.",
+    ),
     "is_strip": Param(default=False, type="boolean"),
     "notify_email": Param(
         default="",
@@ -100,14 +116,19 @@ DAG_PARAMS = {
     ),
 }
 
-
-# ── Task functions (module-level — импортируемы в тестах) ─────────────────────
+# ── Task functions (module-level — импортируемы в тестах) ───────────────────
+#
 # Вынесены на уровень модуля намеренно: так их можно импортировать
 # и тестировать без запуска Airflow.
 # Внутри @dag они просто оборачиваются в task() при регистрации DAG.
 
+
 def _validate_params_fn(**context: Any) -> dict[str, Any]:
-    """Базовая проверка параметров до запуска тяжёлой логики."""
+    """Базовая проверка параметров до запуска тяжёлой логики.
+
+    Нормализует алиасы db_type ("gp" → "greenplum") чтобы downstream-таски
+    всегда получали полное имя, которое принимает DatabaseType enum.
+    """
     params = context["params"]
 
     input_file = params.get("input_file", "")
@@ -117,14 +138,21 @@ def _validate_params_fn(**context: Any) -> dict[str, Any]:
     path = Path(input_file)
     if not path.exists():
         raise FileNotFoundError(f"Файл не найден: {path}")
-    if path.suffix.lower() not in (".xlsx", ".xls", ".xlsm"):
+
+    allowed_ext = {".xlsx", ".xls", ".xlsm", ".csv", ".tsv", ".sql", ".txt"}
+    if path.suffix.lower() not in allowed_ext:
         raise ValueError(
             f"Неподдерживаемое расширение файла: {path.suffix}. "
-            "Допустимо: .xlsx, .xls, .xlsm"
+            f"Допустимо: {', '.join(sorted(allowed_ext))}"
         )
 
     log.info("Файл найден: %s (размер %.1f КБ)", path, path.stat().st_size / 1024)
-    return dict(params)
+
+    # Нормализуем db_type здесь — один раз для всех downstream-тасков
+    result = dict(params)
+    raw_db_type = result.get("db_type", "")
+    result["db_type"] = _DB_TYPE_ALIASES.get(raw_db_type, raw_db_type)
+    return result
 
 
 def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
@@ -140,7 +168,7 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
 
     cfg = LoaderConfig(
         input_file=Path(params["input_file"]),
-        db_type=DatabaseType(_DB_TYPE_ALIASES.get(params["db_type"], params["db_type"])),
+        db_type=DatabaseType(params["db_type"]),
         table_name=params["table_name"],
         scheme_name=params["scheme_name"],
         dump_type=DumpType(params["dump_type"]),
@@ -150,6 +178,8 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
         skip_cols=int(params.get("skip_cols", 0)),
         batch_size=int(params.get("batch_size", 500)),
         delimiter=params.get("delimiter", ","),
+        encoding_input=params.get("encoding_input", "utf-8"),
+        encoding_output=params.get("encoding_output", "utf-8"),
         is_strip=bool(params.get("is_strip", False)),
         max_row=params.get("max_row"),
         wf_load_idn=params.get("wf_load_idn"),
@@ -164,7 +194,8 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
     try:
         result = load(cfg)
     except DataValidationError as exc:
-        log.error("Ошибки валидации данных (%d ячеек): %s", len(exc.validation_result.errors) if exc.validation_result else 0, exc)
+        n_errors = len(exc.validation_result.errors) if exc.validation_result else 0
+        log.error("Ошибки валидации данных (%d ячеек): %s", n_errors, exc)
         _maybe_notify(params, subject="[excel_loader] Ошибки валидации", body=str(exc))
         raise
     except FileReadError as exc:
@@ -183,6 +214,7 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
         "rows_skipped": result.rows_skipped,
         "has_errors": result.has_errors,
     }
+
     log.info(
         "Загрузка завершена. Строк записано: %d, пропущено: %d.",
         result.rows_written,
@@ -194,12 +226,12 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
 def _report_fn(result: dict[str, Any], **context: Any) -> None:
     """Финальное логирование результата."""
     log.info("=== Excel Loader — итоговый отчёт ===")
-    log.info("  Выходной файл  : %s", result.get("output_file"))
-    log.info("  Файл ошибок    : %s", result.get("error_file"))
-    log.info("  Строк записано : %d", result.get("rows_written", 0))
-    log.info("  Строк пропущено: %d", result.get("rows_skipped", 0))
+    log.info(" Выходной файл : %s", result.get("output_file"))
+    log.info(" Файл ошибок   : %s", result.get("error_file"))
+    log.info(" Строк записано: %d", result.get("rows_written", 0))
+    log.info(" Строк пропущено: %d", result.get("rows_skipped", 0))
     if result.get("has_errors"):
-        log.warning("  ⚠ В данных обнаружены ошибки, см. файл ошибок.")
+        log.warning(" ⚠ В данных обнаружены ошибки валидации.")
 
 
 def _maybe_notify(params: dict[str, Any], subject: str, body: str) -> None:
@@ -212,11 +244,11 @@ def _maybe_notify(params: dict[str, Any], subject: str, body: str) -> None:
             log.warning("Не удалось отправить уведомление: %s", exc)
 
 
-# ── DAG ───────────────────────────────────────────────────────────────────────
+# ── DAG ─────────────────────────────────────────────────────────────────────
 
 @dag(
     dag_id="excel_loader",
-    description="Загрузка Excel → SQL/CSV с валидацией данных",
+    description="Загрузка Excel/CSV/SQL → SQL/CSV файл с валидацией данных",
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -227,11 +259,11 @@ def _maybe_notify(params: dict[str, Any], subject: str, body: str) -> None:
 )
 def excel_loader_dag() -> None:
     validate_params = task(task_id="validate_params")(_validate_params_fn)
-    load_excel      = task(task_id="load_excel")(_load_excel_fn)
-    report          = task(task_id="report")(_report_fn)
+    load_excel = task(task_id="load_excel")(_load_excel_fn)
+    report = task(task_id="report")(_report_fn)
 
     validated = validate_params()
-    loaded    = load_excel(validated)
+    loaded = load_excel(validated)
     report(loaded)
 
 

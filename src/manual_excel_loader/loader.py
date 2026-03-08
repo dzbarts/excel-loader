@@ -18,21 +18,46 @@ from .writers.sql_file import SqlFileWriter
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
-    "utf-8", "utf-16", "utf-16-le", "utf-16-be",
-    "ascii", "latin1", "cp1252", "cp1251", "cp866",
-    "koi8-r", "koi8-u", "iso-8859-5",
-    "gbk", "big5", "shift_jis", "euc-jp", "euc-kr",
+# Единый список поддерживаемых кодировок.
+# encoding_input  — применяется при чтении CSV/TSV/SQL-файлов.
+# encoding_output — применяется при записи SQL/CSV-файлов.
+# Для Excel (.xlsx) кодировка не нужна: openpyxl читает бинарный формат.
+SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
+    "utf-8",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "ascii",
+    "latin1",
+    "cp1252",
+    "cp1251",
+    "cp866",
+    "koi8-r",
+    "koi8-u",
+    "iso-8859-5",
+    "gbk",
+    "big5",
+    "shift_jis",
+    "euc-jp",
+    "euc-kr",
 })
 
 
-# ── Config helpers ────────────────────────────────────────────────────────────
+# ── Config helpers ──────────────────────────────────────────────────────────
 
 def _validate_config(config: LoaderConfig) -> None:
-    if config.encoding_output.lower() not in _SUPPORTED_ENCODINGS:
+    suffix = config.input_file.suffix.lower()
+    # encoding_input нужна только для текстовых форматов
+    if suffix in (".csv", ".tsv", ".sql", ".txt"):
+        if config.encoding_input.lower() not in SUPPORTED_ENCODINGS:
+            raise ConfigurationError(
+                f"Unsupported encoding_input '{config.encoding_input}'. "
+                f"Supported: {sorted(SUPPORTED_ENCODINGS)}"
+            )
+    if config.encoding_output.lower() not in SUPPORTED_ENCODINGS:
         raise ConfigurationError(
             f"Unsupported encoding_output '{config.encoding_output}'. "
-            f"Supported: {sorted(_SUPPORTED_ENCODINGS)}"
+            f"Supported: {sorted(SUPPORTED_ENCODINGS)}"
         )
 
 
@@ -56,34 +81,28 @@ def _resolve_output_path(config: LoaderConfig) -> Path:
     ).with_suffix(suffix)
 
 
-# ── Reader resolution ─────────────────────────────────────────────────────────
+# ── Reader resolution ───────────────────────────────────────────────────────
 
 def _resolve_reader(
     config: LoaderConfig,
 ) -> tuple[SheetData, LoaderConfig, TemplateConfig | None]:
-    """
-    Detect input format → return (sheet_data, effective_config, template_config).
+    """Определить формат входящего файла → вернуть (sheet_data, effective_config, template_config).
 
-    For regular Excel: template_config is None, config unchanged.
-    For template Excel: config copy with skip_rows/dtypes merged from template.
+    Для обычного Excel: template_config = None, конфиг не меняется.
+    Для шаблонного Excel: конфиг копируется с параметрами из TemplateConfig.
     """
     path = config.input_file
     suffix = path.suffix.lower()
 
-    if suffix in (".xlsx", ".xls"):
+    if suffix in (".xlsx", ".xls", ".xlsm"):
         if is_template(path):
             logger.info("Detected ODS template format: %s", path.name)
             tmpl = read_template_config(path)
-
             effective = dataclasses.replace(
                 config,
                 skip_rows=tmpl.skip_rows,
                 dtypes=tmpl.dtypes if config.dtypes is None else config.dtypes,
             )
-
-            # skip_header_validation=True because the header row on 'data'
-            # contains Russian display names, not technical EN column names.
-            # The actual output headers come from TemplateConfig.headers.
             read_cfg = ExcelReadConfig(
                 path=path,
                 sheet_name="data",
@@ -94,7 +113,6 @@ def _resolve_reader(
             )
             sheet = read_excel(read_cfg)
             return sheet, effective, tmpl
-
         else:
             logger.info("Detected regular Excel format: %s", path.name)
             read_cfg = ExcelReadConfig(
@@ -106,7 +124,7 @@ def _resolve_reader(
             )
             sheet = read_excel(read_cfg)
             return sheet, config, None
-    
+
     if suffix in (".csv", ".tsv"):
         logger.info("Detected CSV format: %s", path.name)
         csv_cfg = CsvReadConfig(
@@ -120,7 +138,7 @@ def _resolve_reader(
         csv_data = read_csv(csv_cfg)
         sheet = SheetData(
             headers=csv_data.headers,
-            rows=csv_data.rows,
+            rows=iter(csv_data.rows),
             source_path=csv_data.source_path,
         )
         return sheet, config, None
@@ -134,7 +152,7 @@ def _resolve_reader(
         sql_data = read_sql(sql_cfg)
         sheet = SheetData(
             headers=sql_data.headers,
-            rows=sql_data.rows,
+            rows=iter(sql_data.rows),
             source_path=sql_data.source_path,
         )
         effective = config
@@ -147,13 +165,8 @@ def _resolve_reader(
         f"Supported: .xlsx, .xls, .xlsm, .csv, .tsv, .sql, .txt"
     )
 
-    raise ConfigurationError(
-        f"Unsupported input format: '{suffix}'. "
-        f"Supported: .xlsx, .xls"
-    )
 
-
-# ── Row-level helpers ─────────────────────────────────────────────────────────
+# ── Row-level helpers ───────────────────────────────────────────────────────
 
 def _make_cell_name(row_idx: int, col_idx: int, skip_rows: int, skip_cols: int) -> str:
     col = col_idx + skip_cols + 1
@@ -187,20 +200,16 @@ def _validate_row(
     result: FileValidationResult,
     key_columns: frozenset[str] | None = None,
 ) -> tuple:
-    """
-    Validate one row, returning a (possibly coerced) output tuple.
+    """Валидировать одну строку, вернуть (возможно скорректированный) кортеж.
 
-    Key-column NULL check happens BEFORE the type validator.
-    A NULL in a key column is its own distinct error ("must not be NULL"),
-    not a type error ("not an integer"). We short-circuit with `continue`
-    so that a single NULL cell does not produce two errors.
+    NULL в ключевом поле проверяется до валидации типа — это самостоятельная
+    ошибка («не может быть NULL»), а не ошибка типа («не целое число»).
     """
     from .result import Ok
 
     output = []
     for col_idx, (col_name, value) in enumerate(zip(headers, row)):
-
-        # ── Key-column NULL guard (before type validation) ────────────────
+        # ── Проверка ключевого поля на NULL ─────────────────────────────
         if key_columns and col_name in key_columns and value is None:
             result.add_error(CellValidationError(
                 cell_name=_make_cell_name(
@@ -214,13 +223,11 @@ def _validate_row(
             continue
 
         validate = validators.get(col_name)
-
         if validate is None:
             output.append(value)
             continue
 
         cell_result = validate(value)
-
         if isinstance(cell_result, Ok):
             output.append(cell_result.value)
         else:
@@ -250,16 +257,9 @@ def _insert_fixed_values(
     headers: list[str],
     fixed_values: dict[str, str],
 ) -> tuple:
-    """
-    Insert template fixed-value columns into the row at their correct positions.
-
-    fixed_values columns are NOT in the raw data rows — they come from specific
-    cells on the 'data' sheet. We reconstruct the full row by walking the
-    canonical header order from TemplateConfig.
-    """
+    """Вставить фиксированные значения шаблона на правильные позиции в строке."""
     if not fixed_values:
         return row
-
     data_iter = iter(row)
     result = []
     for col in headers:
@@ -278,17 +278,11 @@ def _append_extra_columns(
     sheet_headers: list[str],
     config: LoaderConfig,
 ) -> tuple:
-    """
-    Append timestamp and wf_load_idn to the row if configured.
+    """Добавить timestamp и wf_load_idn к строке, если они не присутствуют в источнике.
 
-    IMPORTANT: we check against sheet_headers (the original columns from the
-    file), NOT against the final output headers list. The output headers list
-    already contains 'load_dttm' / 'write_ts' because we added it during
-    header construction — so checking against it would always return False
-    and the value would never be appended to the row.
-
-    Rule: if the column does NOT exist in the source file → we generate its
-    value and append it. If it already exists in the file → user data wins.
+    Проверяем по sheet_headers (оригинальные колонки файла), а не по финальному
+    списку заголовков — финальный уже содержит 'load_dttm'/'write_ts', поэтому
+    проверка по нему всегда вернула бы False.
     """
     row = list(row)
     if config.timestamp and config.timestamp.value not in sheet_headers:
@@ -298,21 +292,25 @@ def _append_extra_columns(
     return tuple(row)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ──────────────────────────────────────────────────────────────
 
 def load(config: LoaderConfig) -> LoadResult:
-    """
-    Run the full pipeline: detect format → read → validate → write SQL/CSV.
+    """Запустить полный pipeline: определить формат → прочитать → валидировать → записать SQL/CSV.
 
-    Supports:
-        - Regular Excel (.xlsx/.xls)
-        - ODS template Excel (sheets 'data' + 'klad_config')
+    Поддерживаемые форматы:
+        - Обычный Excel (.xlsx/.xls/.xlsm)
+        - Шаблонный Excel (листы 'data' + 'klad_config')
+        - CSV / TSV
+        - SQL INSERT-файлы
 
-    Error modes:
-        IGNORE  — write rows as-is, no validation
-        COERCE  — validate; replace invalid cells with NULL, always write
-        VERIFY  — validate; raise DataValidationError if errors, do not write
-        RAISE   — validate; replace invalid cells with NULL, raise if errors
+    Режимы обработки ошибок:
+        IGNORE  — записать строки как есть, без валидации
+        COERCE  — валидировать; ошибочные ячейки → NULL, запись продолжается
+        VERIFY  — валидировать; при ошибках поднять DataValidationError, файл не создаётся
+        RAISE   — валидировать; ошибочные ячейки → NULL, при ошибках поднять DataValidationError
+
+    Returns:
+        LoadResult с полями rows_written, rows_skipped, output_file, error_file, has_errors.
     """
     _validate_config(config)
 
@@ -322,7 +320,7 @@ def load(config: LoaderConfig) -> LoadResult:
         ErrorMode.COERCE,
     )
 
-    # ── 1. Detect format and read ─────────────────────────────────────────
+    # ── 1. Определить формат и прочитать ────────────────────────────────
     sheet, effective_config, tmpl = _resolve_reader(config)
 
     if needs_validation and not effective_config.dtypes:
@@ -331,17 +329,16 @@ def load(config: LoaderConfig) -> LoadResult:
             "Pass a dtypes dict or use parse_ddl() to extract types from a DDL string."
         )
 
-    # ── 2. Build output headers ───────────────────────────────────────────
-    # sheet.headers = raw headers from the file (Russian for templates).
-    # For templates, we use TemplateConfig.headers (EN technical names).
+    # ── 2. Сформировать итоговые заголовки ───────────────────────────────
+    # sheet.headers — сырые заголовки из файла (для шаблона: русские имена).
+    # Для шаблона используем TemplateConfig.headers (технические EN-имена).
     if tmpl is not None:
         headers = list(tmpl.headers)
     else:
         headers = list(sheet.headers)
 
-    # Keep a reference to source-file headers BEFORE adding extra columns.
-    # _append_extra_columns uses this to decide whether to generate a value
-    # or trust that the file already provides it.
+    # sheet_headers нужны в _append_extra_columns для проверки: есть ли
+    # колонка уже в файле или её нужно сгенерировать.
     sheet_headers = list(sheet.headers)
 
     if effective_config.timestamp and effective_config.timestamp.value not in headers:
@@ -349,14 +346,13 @@ def load(config: LoaderConfig) -> LoadResult:
     if effective_config.wf_load_idn:
         headers.append("wf_load_idn")
 
-    # ── 3. Build validators ───────────────────────────────────────────────
+    # ── 3. Построить валидаторы ──────────────────────────────────────────
     validators: dict[str, object] = {}
     if needs_validation and effective_config.dtypes:
-        # For templates: validate "table" columns only — fixed-value columns
-        # are constants, validating them at the cell level is meaningless.
         validate_against = (
             [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
-            if tmpl else sheet.headers
+            if tmpl
+            else sheet.headers
         )
         validators = _build_validators(
             validate_against,
@@ -366,52 +362,65 @@ def load(config: LoaderConfig) -> LoadResult:
 
     key_columns = tmpl.key_columns if tmpl is not None else None
 
-    # ── 4. Define row processing pipeline ────────────────────────────────
+    # ── 4. Pipeline обработки строк ──────────────────────────────────────
     validation_result = FileValidationResult()
 
-    # Headers used as the column-name reference inside _validate_row.
-    #
-    # For templates: use EN technical names from TemplateConfig, excluding
-    # fixed-value columns (they are not present in raw data rows at all).
-    # sheet.headers contains Russian display names — looking them up in the
-    # validators dict (which is keyed on EN names) would always miss.
-    #
-    # For regular Excel: sheet.headers are already the correct EN names.
     _validate_headers_for_row = (
         [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
-        if tmpl is not None else list(sheet.headers)
+        if tmpl is not None
+        else list(sheet.headers)
     )
 
+    rows_skipped = 0
+
     def _processed_rows():
+        nonlocal rows_skipped
         for row_idx, raw_row in enumerate(sheet.rows):
+            # Пустые строки уже отфильтрованы в reader; на всякий случай считаем
+            if not any(cell is not None for cell in raw_row):
+                rows_skipped += 1
+                continue
             row = _apply_row_transforms(raw_row, effective_config)
             if needs_validation:
                 row = _validate_row(
-                    row, _validate_headers_for_row, validators,  # ← EN names, not sheet.headers
-                    row_idx, effective_config, validation_result,
+                    row,
+                    _validate_headers_for_row,
+                    validators,
+                    row_idx,
+                    effective_config,
+                    validation_result,
                     key_columns=key_columns,
                 )
             if tmpl is not None and tmpl.fixed_values:
                 row = _insert_fixed_values(row, tmpl.headers, tmpl.fixed_values)
-            # Pass sheet_headers (source file columns), not the final headers list
             row = _append_extra_columns(row, sheet_headers, effective_config)
             yield row
 
-    # ── 5. Write (or verify-only) ─────────────────────────────────────────
+    # ── 5. Запись (или только проверка при VERIFY) ───────────────────────
     output_path = _resolve_output_path(effective_config)
     rows_written = 0
 
     if effective_config.error_mode == ErrorMode.VERIFY:
         for _ in _processed_rows():
             rows_written += 1
-        if not validation_result.is_valid:
+        has_errors = not validation_result.is_valid
+        if has_errors:
             raise DataValidationError(
                 f"Validation failed: {len(validation_result.errors)} error(s).",
                 validation_result,
             )
-        logger.info("VERIFY passed: %d rows, no errors. File: %s",
-                    rows_written, config.input_file.name)
-        return LoadResult(rows_written=rows_written, output_path=output_path)
+        logger.info(
+            "VERIFY passed: %d rows, no errors. File: %s",
+            rows_written, config.input_file.name,
+        )
+        return LoadResult(
+            rows_written=rows_written,
+            rows_skipped=rows_skipped,
+            output_file=None,
+            error_file=None,
+            has_errors=False,
+            validation_result=validation_result,
+        )
 
     writer_config = _build_writer_config(effective_config, output_path)
     writer = (
@@ -428,13 +437,27 @@ def load(config: LoaderConfig) -> LoadResult:
 
     writer.write(headers, _counted_rows())
 
-    if effective_config.error_mode == ErrorMode.RAISE and not validation_result.is_valid:
+    has_errors = not validation_result.is_valid
+
+    if effective_config.error_mode == ErrorMode.RAISE and has_errors:
         raise DataValidationError(
             f"Validation failed: {len(validation_result.errors)} error(s).",
             validation_result,
         )
 
-    logger.info("%s written: %d rows → %s",
-                effective_config.dump_type.value.upper(),
-                rows_written, output_path.name)
-    return LoadResult(rows_written=rows_written, output_path=output_path)
+    logger.info(
+        "%s written: %d rows → %s",
+        effective_config.dump_type.value.upper(),
+        rows_written,
+        output_path.name,
+    )
+
+    return LoadResult(
+        rows_written=rows_written,
+        rows_skipped=rows_skipped,
+        output_file=output_path,
+        error_file=None,       # файл ошибок пока не создаётся автоматически;
+                               # ошибки доступны через result.validation_result.errors
+        has_errors=has_errors,
+        validation_result=validation_result if needs_validation else None,
+    )
