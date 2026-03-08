@@ -1,33 +1,46 @@
-# src/excel_loader/exceptions.py
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import FileValidationResult
+
 
 class ExcelLoaderError(Exception):
-    """Базовое исключение проекта. Лови это если хочешь поймать всё."""
-    pass
+    """Base exception for all excel-loader errors."""
+
 
 class FileReadError(ExcelLoaderError):
-    """Не удалось прочитать входной файл."""
-    pass
+    """Cannot open or read the source file."""
+
 
 class HeaderValidationError(ExcelLoaderError):
-    """Проблема с заголовками таблицы."""
-    pass
+    """Column headers are missing, invalid, or duplicated."""
+
 
 class DataValidationError(ExcelLoaderError):
-    """Данные не соответствуют ожидаемым типам."""
-    pass
+    """One or more cells failed type validation.
+
+    Attributes:
+        validation_result: Full FileValidationResult with all cell errors.
+    """
+
+    def __init__(self, message: str, validation_result: FileValidationResult) -> None:
+        super().__init__(message)
+        self.validation_result = validation_result
+
 
 class UnsupportedDataTypeError(ExcelLoaderError):
-    """Передан неизвестный тип данных."""
-    pass
+    """The requested data type is not supported for the target database."""
+
 
 class ConfigurationError(ExcelLoaderError):
-    """Некорректная конфигурация запуска."""
-    pass
+    """Invalid or incomplete loader configuration."""
+
 
 class DumpCreationError(ExcelLoaderError):
-    """Ошибка при создании дампа данных."""
-    pass
+    """Failed to create the output SQL/CSV file."""
+
 
 class TemplateError(ExcelLoaderError):
-    """Проблема с excel шаблоном."""
-    pass
+    """ODS template structure is invalid or inconsistent."""

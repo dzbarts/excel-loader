@@ -48,3 +48,10 @@ class FileValidationResult:
     def add_error(self, error: CellValidationError) -> None:
         self.errors.append(error)
         self.is_valid = False
+
+
+@dataclass
+class LoadResult:
+    """Minimal summary returned by load(). Not statistics — just facts."""
+    rows_written: int
+    output_path: Path
