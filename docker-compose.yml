@@ -6,8 +6,13 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW_FERNET_KEY}'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW_SECRET_KEY}'
+    # Устанавливает пакет из смонтированного src/ при старте каждого контейнера.
+    # Для продакшна замени на кастомный Dockerfile с pip install -e .
+    _PIP_ADDITIONAL_REQUIREMENTS: ''
+    PYTHONPATH: /opt/airflow/src
   volumes:
     - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
     - airflow_logs:/opt/airflow/logs
   networks:
     - de_network
@@ -16,6 +21,7 @@ x-airflow-common: &airflow-common
       condition: service_healthy
 
 services:
+
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: clickhouse
@@ -52,7 +58,16 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
-    entrypoint: bash -c "airflow db migrate && airflow users create --username ${AIRFLOW_ADMIN_USERNAME} --password ${AIRFLOW_ADMIN_PASSWORD} --firstname Air --lastname Flow --role Admin --email admin@example.com"
+    entrypoint: bash -c "
+      pip install -e /opt/airflow/src/.. --quiet --no-cache-dir &&
+      airflow db migrate &&
+      airflow users create
+        --username ${AIRFLOW_ADMIN_USERNAME}
+        --password ${AIRFLOW_ADMIN_PASSWORD}
+        --firstname Air --lastname Flow
+        --role Admin
+        --email admin@example.com
+      "
     restart: no
 
   airflow-webserver:
@@ -60,13 +75,15 @@ services:
     container_name: airflow-webserver
     ports:
       - "8080:8080"
-    command: webserver
+    command: >
+      bash -c "pip install -e /opt/airflow/src/.. --quiet --no-cache-dir && airflow webserver"
     restart: unless-stopped
 
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
-    command: scheduler
+    command: >
+      bash -c "pip install -e /opt/airflow/src/.. --quiet --no-cache-dir && airflow scheduler"
     restart: unless-stopped
 
 volumes:

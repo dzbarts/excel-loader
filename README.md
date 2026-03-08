@@ -1,7 +1,7 @@
 # excel-loader
 
-Загрузчик Excel/CSV/SQL → GreenPlum / ClickHouse с валидацией данных.  
-Запускается как вручную (Python API), так и через Apache Airflow.
+Загрузчик Excel / CSV / SQL → GreenPlum / ClickHouse с валидацией данных.  
+Запускается как Python API вручную или через Apache Airflow DAG.
 
 ---
 
@@ -9,11 +9,11 @@
 
 | Функция | Статус |
 |---|---|
-| Чтение Excel (xlsx, xlsm) | ✅ |
+| Чтение Excel (`.xlsx`, `.xlsm`) | ✅ |
 | Чтение CSV / TSV | ✅ |
 | Чтение SQL INSERT-файлов | ✅ |
 | Валидация типов данных (GP / CH) | ✅ |
-| Поддержка шаблонов ODS (data + klad_config) | ✅ |
+| Поддержка шаблонов ODS (`data` + `klad_config`) | ✅ |
 | Генерация DDL | ✅ |
 | Выгрузка в SQL-файл | ✅ |
 | Выгрузка в CSV-файл | ✅ |
@@ -28,43 +28,50 @@
 ```
 excel-loader/
 ├── dags/
-│   └── excel_loader_dag.py       # Airflow DAG
+│   └── excel_loader_dag.py        # Airflow DAG
 ├── src/
 │   └── manual_excel_loader/
 │       ├── readers/
-│       │   ├── csv_reader.py     # Чтение CSV/TSV
-│       │   └── sql_reader.py     # Чтение SQL INSERT-файлов
+│       │   ├── excel_reader.py    # Чтение Excel
+│       │   ├── csv_reader.py      # Чтение CSV/TSV
+│       │   └── sql_reader.py      # Чтение SQL INSERT-файлов
 │       ├── writers/
-│       │   ├── base.py           # Абстрактный Writer
-│       │   ├── csv_file.py       # Запись в CSV
-│       │   ├── sql_file.py       # Запись в SQL
-│       │   └── database.py       # Прямая запись в GP / CH
+│       │   ├── base.py            # Абстракция + конфиги
+│       │   ├── csv_file.py        # Запись в CSV
+│       │   ├── sql_file.py        # Запись в SQL
+│       │   └── database.py        # Прямая запись в GP / CH
 │       ├── enums.py
 │       ├── exceptions.py
-│       ├── loader.py             # Основной API: load()
-│       ├── models.py             # LoaderConfig, LoadResult
-│       ├── reader.py             # Чтение Excel
-│       ├── template.py           # Обработка шаблонов ODS
-│       ├── validator.py          # Валидация типов данных
-│       └── ddl.py                # Генерация DDL
+│       ├── loader.py              # Основной API: load()
+│       ├── models.py              # LoaderConfig, LoadResult
+│       ├── result.py              # Ok / Err result types
+│       ├── template.py            # Обработка шаблонов ODS
+│       ├── validator.py           # Валидация типов данных
+│       └── ddl.py                 # Генерация DDL
 ├── tests/
 │   ├── test_dag.py
-│   ├── test_csv_reader.py
-│   ├── test_sql_reader.py
-│   ├── test_database_writers.py
 │   ├── test_loader.py
 │   ├── test_validator.py
 │   ├── test_template.py
-│   └── test_writers.py
-├── infra/
-│   └── compose.yaml              # Docker Compose для локального Airflow
-├── pyproject.toml
-└── .env.example
+│   ├── test_writers.py
+│   ├── test_csv_reader.py
+│   ├── test_sql_reader.py
+│   └── test_database_writers.py
+├── docs/
+├── .env.example
+├── .gitignore
+├── docker-compose.yml             # Локальный Airflow + GP + CH
+├── Makefile
+└── pyproject.toml
 ```
 
 ---
 
 ## Быстрый старт (Python API)
+
+```bash
+pip install -e ".[dev]"
+```
 
 ```python
 from pathlib import Path
@@ -96,12 +103,20 @@ print(f"Выходной файл: {result.output_file}")
 ### Локально (Docker Compose)
 
 ```bash
-# Запуск
+# 1. Создай .env из шаблона и заполни пароли
+make init
+nano .env
+
+# 2. Запусти окружение
 make up
 
-# Интерфейс Airflow
-open http://localhost:8080   # admin / admin
+# 3. Открой UI
+open http://localhost:8080   # admin / <твой пароль из .env>
 ```
+
+Docker Compose поднимает: Airflow (webserver + scheduler), PostgreSQL (метаданные Airflow + GreenPlum-совместимый эндпоинт), ClickHouse.
+
+> **Важно:** пакет `manual_excel_loader` устанавливается внутри контейнера через `_PIP_ADDITIONAL_REQUIREMENTS` в `.env`. Если после `make up` видишь `ModuleNotFoundError` — убедись что переменная заполнена (подробнее в разделе [Деплой пакета](#деплой-пакета-в-контейнер)).
 
 ### Параметры DAG
 
@@ -122,17 +137,15 @@ open http://localhost:8080   # admin / admin
 }
 ```
 
-### Параметры
-
 | Параметр | Тип | Обязательный | Описание |
 |---|---|---|---|
-| `input_file` | string | ✅ | Абсолютный путь к файлу |
+| `input_file` | string | ✅ | Абсолютный путь к файлу внутри контейнера |
 | `db_type` | `gp` / `ch` | ✅ | Целевая БД |
 | `table_name` | string | — | Имя таблицы (default: `table_name`) |
-| `scheme_name` | string | — | Схема/БД (default: `scheme_name`) |
+| `scheme_name` | string | — | Схема / БД (default: `scheme_name`) |
 | `dump_type` | `sql` / `csv` | — | Тип выходного файла |
 | `error_mode` | `raise`/`coerce`/`ignore`/`verify` | — | Обработка ошибок валидации |
-| `dtypes_ddl` | string | — | DDL или список типов через запятую |
+| `dtypes_ddl` | string | — | DDL-строка или список типов |
 | `timestamp` | `write_ts` / `load_dttm` | — | Добавить временну́ю метку |
 | `batch_size` | integer | — | Размер батча (default: 500) |
 | `skip_rows` | integer | — | Пропустить N строк заголовка |
@@ -143,10 +156,40 @@ open http://localhost:8080   # admin / admin
 
 | `error_mode` | Поведение |
 |---|---|
-| `raise` | Проверяет данные, при ошибках — task failed, retry по расписанию |
+| `raise` | Валидирует; при ошибках — task failed + retry |
 | `coerce` | Ошибочные ячейки → NULL, загрузка продолжается |
 | `ignore` | Загрузка без проверки |
 | `verify` | Только проверка, выгрузки нет |
+
+---
+
+## Деплой пакета в контейнер
+
+Airflow worker должен иметь доступ к пакету `manual_excel_loader`. Самый простой способ для локальной разработки — переменная окружения в `.env`:
+
+```dotenv
+# .env
+_PIP_ADDITIONAL_REQUIREMENTS=python-dateutil openpyxl tqdm
+```
+
+Пакет при этом монтируется как volume и устанавливается через `pip install -e`:
+
+```yaml
+# docker-compose.yml (уже настроено)
+volumes:
+  - ./src:/opt/airflow/src
+environment:
+  _PIP_ADDITIONAL_REQUIREMENTS: "..."
+```
+
+Для продакшн-деплоя — собери кастомный образ:
+
+```dockerfile
+FROM apache/airflow:2.9.1
+COPY src/ /opt/airflow/src/
+COPY pyproject.toml /opt/airflow/
+RUN pip install -e /opt/airflow/.[dev] --no-cache-dir
+```
 
 ---
 
@@ -158,18 +201,18 @@ from manual_excel_loader.writers.database import PostgresWriter, ClickHouseWrite
 
 # GreenPlum
 pg_writer = PostgresWriter(DbWriterConfig(
-    dsn="postgresql://user:pass@host:5432/db",
-    table_name="my_table",
-    scheme_name="my_schema",
+    host="localhost", port=5432, database="de_db",
+    user="admin", password="...",
+    table_name="my_table", scheme_name="my_schema",
     batch_size=1000,
 ))
 pg_writer.write(headers=["id", "name"], rows=[(1, "Alice"), (2, "Bob")])
 
 # ClickHouse
 ch_writer = ClickHouseWriter(DbWriterConfig(
-    dsn="clickhouse://user:pass@host:9000/mydb",
-    table_name="my_table",
-    scheme_name="mydb",
+    host="localhost", port=9000, database="default",
+    user="admin", password="...",
+    table_name="my_table", scheme_name="default",
     batch_size=5000,
 ))
 ch_writer.write(headers=["id", "name"], rows=[(1, "Alice")])
@@ -183,11 +226,17 @@ ch_writer.write(headers=["id", "name"], rows=[(1, "Alice")])
 # Все тесты
 make test
 
-# С покрытием
+# С покрытием (HTML-отчёт в htmlcov/)
 make coverage
 
-# Только DAG-тесты (без Airflow)
-pytest tests/test_dag.py -v
+# Только DAG-тесты (без запущенного Airflow)
+make test-dag
+
+# Линтер
+make lint
+
+# Форматирование
+make fmt
 ```
 
 ---
@@ -195,12 +244,14 @@ pytest tests/test_dag.py -v
 ## Разработка
 
 ```bash
-# Установка зависимостей
-pip install -e ".[dev]"
+# Клонировать
+git clone https://github.com/dzbarts/excel-loader.git
+cd excel-loader
 
-# Линтер
-make lint
+# Создать .env и виртуальное окружение
+make init
+python3 -m venv .venv && source .venv/bin/activate
 
-# Форматирование
-make fmt
+# Установить зависимости (включая dev)
+make install
 ```
