@@ -2,14 +2,16 @@
 writers/database.py
 ===================
 Прямая запись строк в GreenPlum (psycopg2) и ClickHouse (clickhouse-driver).
-
 Обе зависимости уже есть в Airflow-окружении (см. список пакетов).
 
 Изменения vs предыдущей версии:
-  - PostgresWriter: имена таблиц/схем/колонок экранируются через psycopg2.sql.Identifier
-    (защита от SQL-инъекции через заголовки Excel).
-  - PostgresWriter: rollback при ошибке батча — частичные данные не остаются в БД.
-  - ClickHouseWriter: client.disconnect() в finally — нет утечки соединений.
+- PostgresWriter: имена таблиц/схем/колонок экранируются через psycopg2.sql.Identifier
+  (защита от SQL-инъекции через заголовки Excel).
+- PostgresWriter: rollback при ошибке батча — частичные данные не остаются в БД.
+- ClickHouseWriter: client.disconnect() в finally — нет утечки соединений.
+- ClickHouseWriter: вставка через список кортежей вместо словарей — устраняет
+  накладные расходы на создание dict при каждой строке; clickhouse-driver
+  принимает оба формата, кортежи быстрее.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from .base import BaseWriter, DbWriterConfig
 log = logging.getLogger(__name__)
 
 
-# ── Batch helper ────────────────────────────────────────────────────────────────
+# ── Batch helper ───────────────────────────────────────────────────────────────
 # Python 3.12+ имеет itertools.batched; держим свою реализацию для совместимости
 # с Python 3.10/3.11 (requires-python = ">=3.10" в pyproject.toml).
 def _batched(iterable: Iterable, size: int) -> Iterator[list]:
@@ -36,13 +38,13 @@ def _batched(iterable: Iterable, size: int) -> Iterator[list]:
         yield batch
 
 
-# ── PostgreSQL / GreenPlum ──────────────────────────────────────────────────────
+# ── PostgreSQL / GreenPlum ─────────────────────────────────────────────────────
 class PostgresWriter(BaseWriter):
     """
     Пишет строки напрямую в GreenPlum / PostgreSQL через psycopg2.
 
-    Использует psycopg2.sql.Identifier для экранирования имён схемы, таблицы
-    и колонок — защита от SQL-инъекции через заголовки Excel-файла.
+    Использует psycopg2.sql.Identifier для экранирования имён схемы,
+    таблицы и колонок — защита от SQL-инъекции через заголовки Excel-файла.
 
     При ошибке любого батча транзакция откатывается целиком (ROLLBACK),
     частичные данные в БД не остаются.
@@ -64,7 +66,7 @@ class PostgresWriter(BaseWriter):
 
         Raises:
             ImportError: если psycopg2-binary не установлен.
-            Exception:  при ошибке БД — после автоматического ROLLBACK.
+            Exception: при ошибке БД — после автоматического ROLLBACK.
         """
         try:
             import psycopg2
@@ -128,15 +130,19 @@ class PostgresWriter(BaseWriter):
         return total_written
 
 
-# ── ClickHouse ──────────────────────────────────────────────────────────────────
+# ── ClickHouse ─────────────────────────────────────────────────────────────────
 class ClickHouseWriter(BaseWriter):
     """
     Пишет строки напрямую в ClickHouse через clickhouse-driver.
 
     clickhouse-driver уже доступен в Airflow-окружении.
 
-    Соединение закрывается в блоке finally — нет утечки соединений
-    при долгой работе Airflow-воркера.
+    Соединение закрывается в блоке finally — нет утечки соединений при долгой
+    работе Airflow-воркера.
+
+    Производительность: строки передаются как список кортежей, а не словарей.
+    clickhouse-driver поддерживает оба формата; кортежи быстрее, потому что
+    не требуют создания промежуточных dict-объектов на каждой строке.
 
     Args:
         config: DbWriterConfig с host/port/database/user/password,
@@ -167,7 +173,12 @@ class ClickHouseWriter(BaseWriter):
         cfg = self._config
         # scheme_name в CH трактуется как database
         qualified = f"{cfg.scheme_name}.{cfg.table_name}"
-        sql = f"INSERT INTO {qualified} ({', '.join(headers)}) VALUES"
+
+        # Передаём кортежи напрямую — clickhouse-driver транспонирует их
+        # в колоночный формат внутри. Экранирование имён колонок через backtick
+        # необходимо для CH, если имя совпадает с ключевым словом.
+        col_list = ", ".join(f"`{h}`" for h in headers)
+        sql = f"INSERT INTO {qualified} ({col_list}) VALUES"
 
         client = Client(
             host=cfg.host,
@@ -179,17 +190,21 @@ class ClickHouseWriter(BaseWriter):
         total_written = 0
         try:
             for batch in _batched(rows, cfg.batch_size):
-                # clickhouse-driver принимает список dict или список tuple
-                dicts = [dict(zip(headers, row)) for row in batch]
-                client.execute(sql, dicts)
+                # Список кортежей: clickhouse-driver сам сопоставляет позиции
+                # с именами колонок из SQL-выражения.
+                client.execute(sql, batch)
                 total_written += len(batch)
                 log.debug(
-                    "CH: вставлено %d строк (всего %d)", len(batch), total_written
+                    "CH: вставлено %d строк (всего %d)",
+                    len(batch),
+                    total_written,
                 )
         finally:
             client.disconnect()
 
         log.info(
-            "ClickHouseWriter: записано %d строк в %s", total_written, qualified
+            "ClickHouseWriter: записано %d строк в %s",
+            total_written,
+            qualified,
         )
         return total_written

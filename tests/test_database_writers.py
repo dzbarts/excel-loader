@@ -4,12 +4,18 @@ tests/test_database_writers.py
 Тесты PostgresWriter и ClickHouseWriter — мокаем сетевые соединения.
 
 Новые тесты vs предыдущей версии:
-  - test_rollback_on_executemany_error: проверяет что conn.rollback() вызывается
-    при ошибке батча (PostgresWriter).
-  - test_disconnect_called_on_success: проверяет что client.disconnect() вызывается
-    после успешной записи (ClickHouseWriter).
-  - test_disconnect_called_on_error: проверяет что client.disconnect() вызывается
-    даже при ошибке execute (ClickHouseWriter) — нет утечки соединений.
+- test_rollback_on_executemany_error: проверяет что conn.rollback() вызывается
+  при ошибке батча (PostgresWriter).
+- test_disconnect_called_on_success: проверяет что client.disconnect()
+  вызывается после успешной записи (ClickHouseWriter).
+- test_disconnect_called_on_error: проверяет что client.disconnect()
+  вызывается даже при ошибке execute (ClickHouseWriter) — нет утечки
+  соединений.
+
+Примечание к тесту данных ClickHouseWriter:
+  Тест проверяет ПОВЕДЕНИЕ (все строки и колонки переданы в execute),
+  а не РЕАЛИЗАЦИЮ (dict vs tuple). Формат передачи — деталь реализации,
+  которую можно менять без изменения контракта writer'а.
 """
 from __future__ import annotations
 
@@ -20,7 +26,8 @@ from manual_excel_loader.writers.database import PostgresWriter, ClickHouseWrite
 from manual_excel_loader.writers.base import DbWriterConfig
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────────────────
+# ── Fixtures ───────────────────────────────────────────────────────────────────
+
 @pytest.fixture
 def pg_config():
     return DbWriterConfig(
@@ -53,7 +60,8 @@ HEADERS = ["id", "name", "age"]
 ROWS = [(1, "Alice", 30), (2, "Bob", 25), (3, "Charlie", 35)]
 
 
-# ── _batched helper ───────────────────────────────────────────────────────────────
+# ── _batched helper ────────────────────────────────────────────────────────────
+
 class TestBatched:
     def test_even_batches(self):
         result = list(_batched([1, 2, 3, 4], 2))
@@ -71,7 +79,8 @@ class TestBatched:
         assert result == [[1, 2]]
 
 
-# ── PostgresWriter ────────────────────────────────────────────────────────────────
+# ── PostgresWriter ─────────────────────────────────────────────────────────────
+
 class TestPostgresWriter:
     def _make_mock_conn(self):
         """Создаёт mock-объект соединения psycopg2 с context manager."""
@@ -108,12 +117,10 @@ class TestPostgresWriter:
         """
         mock_conn, mock_cursor = self._make_mock_conn()
         mock_cursor.executemany.side_effect = [None, RuntimeError("DB error")]
-
         with patch("psycopg2.connect", return_value=mock_conn):
             writer = PostgresWriter(pg_config)
             with pytest.raises(RuntimeError, match="DB error"):
                 writer.write(HEADERS, ROWS)
-
         mock_conn.rollback.assert_called_once()
         mock_conn.commit.assert_not_called()
 
@@ -124,11 +131,9 @@ class TestPostgresWriter:
         что означает использование psycopg2.sql API вместо f-строки.
         """
         from psycopg2 import sql as pgsql
-
         mock_conn, mock_cursor = self._make_mock_conn()
         with patch("psycopg2.connect", return_value=mock_conn):
             PostgresWriter(pg_config).write(HEADERS, ROWS)
-
         sql_used = mock_cursor.executemany.call_args_list[0][0][0]
         # psycopg2.sql.Composed — это объект, а не строка
         assert isinstance(sql_used, pgsql.Composed), (
@@ -161,7 +166,8 @@ class TestPostgresWriter:
         mock_conn.commit.assert_called_once()
 
 
-# ── ClickHouseWriter ──────────────────────────────────────────────────────────────
+# ── ClickHouseWriter ───────────────────────────────────────────────────────────
+
 class TestClickHouseWriter:
     def test_write_calls_execute(self, ch_config):
         """client.execute вызывается для каждого батча."""
@@ -173,16 +179,48 @@ class TestClickHouseWriter:
         assert mock_client.execute.call_count == 2
         assert count == 3
 
-    def test_rows_passed_as_dicts(self, ch_config):
-        """clickhouse-driver получает список словарей."""
+    def test_all_rows_passed_to_execute(self, ch_config):
+        """Все строки и значения переданы в execute без потерь.
+
+        Проверяем ПОВЕДЕНИЕ (данные дошли до driver'а), а не РЕАЛИЗАЦИЮ
+        (dict vs tuple). Формат — деталь реализации, которую можно менять
+        без изменения контракта. Контракт: каждая строка из входного итератора
+        должна оказаться в одном из вызовов execute в том же порядке значений.
+        """
         mock_client = MagicMock()
         with patch("clickhouse_driver.Client", return_value=mock_client):
             ClickHouseWriter(ch_config).write(HEADERS, ROWS[:1])
+
+        # Проверяем что execute вызван ровно один раз (1 строка, batch_size=2)
+        assert mock_client.execute.call_count == 1
+
+        # Извлекаем данные, переданные в execute (второй позиционный аргумент)
         passed_data = mock_client.execute.call_args_list[0][0][1]
+
+        # passed_data — список (батч), каждый элемент — строка данных
         assert isinstance(passed_data, list)
-        assert isinstance(passed_data[0], dict)
-        assert passed_data[0]["id"] == 1
-        assert passed_data[0]["name"] == "Alice"
+        assert len(passed_data) == 1
+
+        # Независимо от формата (dict или tuple) — значения должны совпадать
+        row = passed_data[0]
+        if isinstance(row, dict):
+            values = (row["id"], row["name"], row["age"])
+        else:
+            values = tuple(row)
+        assert values == (1, "Alice", 30), (
+            f"Ожидались данные (1, 'Alice', 30), получено: {row}"
+        )
+
+    def test_sql_contains_table_and_columns(self, ch_config):
+        """SQL-строка содержит имя таблицы и все заголовки колонок."""
+        mock_client = MagicMock()
+        with patch("clickhouse_driver.Client", return_value=mock_client):
+            ClickHouseWriter(ch_config).write(HEADERS, ROWS[:1])
+
+        sql_used = mock_client.execute.call_args_list[0][0][0]
+        assert "test_db.test_table" in sql_used
+        for col in HEADERS:
+            assert col in sql_used, f"Колонка '{col}' отсутствует в SQL: {sql_used}"
 
     def test_disconnect_called_on_success(self, ch_config):
         """client.disconnect() вызывается после успешной записи.

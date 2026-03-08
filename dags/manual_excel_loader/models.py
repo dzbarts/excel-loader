@@ -6,6 +6,17 @@ from typing import Optional
 
 from .enums import DatabaseType, ErrorMode, DumpType, TimestampField
 
+# Единый список поддерживаемых кодировок.
+# encoding_input — применяется при чтении CSV/TSV/SQL-файлов.
+# encoding_output — применяется при записи SQL/CSV-файлов.
+# Для Excel (.xlsx) кодировка не нужна: openpyxl читает бинарный формат.
+SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
+    "utf-8", "utf-16", "utf-16-le", "utf-16-be",
+    "ascii", "latin1", "cp1252", "cp1251", "cp866",
+    "koi8-r", "koi8-u", "iso-8859-5",
+    "gbk", "big5", "shift_jis", "euc-jp", "euc-kr",
+})
+
 
 @dataclass
 class LoaderConfig:
@@ -13,19 +24,16 @@ class LoaderConfig:
 
     Поля кодировок:
         encoding_input  — кодировка входящего CSV/TSV/SQL файла.
-                          Для Excel игнорируется: openpyxl читает бинарный XLSX
-                          и не принимает кодировку как параметр.
+            Для Excel игнорируется: openpyxl читает бинарный XLSX.
         encoding_output — кодировка исходящего SQL/CSV файла.
 
     Поля прогресса:
-        show_progress   — показывать tqdm прогресс-бар при ручном запуске.
-                          Оставьте False (по умолчанию) при запуске через Airflow —
-                          tqdm-вывод засоряет логи воркера.
+        show_progress — показывать tqdm прогресс-бар при ручном запуске.
+            Оставьте False (по умолчанию) при запуске через Airflow.
     """
 
     input_file: Path
     db_type: DatabaseType
-
     sheet_name: Optional[str] = None
     skip_rows: int = 0
     skip_cols: int = 0
@@ -37,7 +45,6 @@ class LoaderConfig:
     # encoding_input: используется только для CSV/TSV/SQL.
     # Excel (.xlsx) кодировку не принимает — openpyxl читает бинарный формат.
     encoding_input: str = "utf-8"
-
     # encoding_output: кодировка создаваемого SQL/CSV файла.
     encoding_output: str = "utf-8"
 
@@ -64,6 +71,10 @@ class LoaderConfig:
 
         Позволяет поймать очевидные ошибки конфигурации до запуска pipeline,
         а не в середине обработки большого файла.
+
+        Кодировки проверяются всегда при создании объекта: encoding_output
+        используется при любом запуске; encoding_input — только для текстовых
+        форматов, но ошибку лучше поймать до чтения файла.
         """
         if self.batch_size <= 0:
             raise ValueError(
@@ -75,6 +86,16 @@ class LoaderConfig:
             raise ValueError(f"skip_cols must be >= 0, got {self.skip_cols}.")
         if self.max_row is not None and self.max_row <= 0:
             raise ValueError(f"max_row must be a positive integer, got {self.max_row}.")
+        if self.encoding_input.lower() not in SUPPORTED_ENCODINGS:
+            raise ValueError(
+                f"Unsupported encoding_input '{self.encoding_input}'. "
+                f"Supported: {sorted(SUPPORTED_ENCODINGS)}"
+            )
+        if self.encoding_output.lower() not in SUPPORTED_ENCODINGS:
+            raise ValueError(
+                f"Unsupported encoding_output '{self.encoding_output}'. "
+                f"Supported: {sorted(SUPPORTED_ENCODINGS)}"
+            )
 
 
 @dataclass(frozen=True)
