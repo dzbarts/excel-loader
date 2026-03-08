@@ -1,19 +1,19 @@
 .PHONY: up down restart logs ps init venv install
 
 up:
-	cd infra && docker compose up -d
+	docker compose up -d
 
 down:
-	cd infra && docker compose down
+	docker compose down
 
 restart:
-	cd infra && docker compose restart
+	docker compose restart
 
 logs:
-	cd infra && docker compose logs -f
+	docker compose logs -f
 
 ps:
-	cd infra && docker compose ps
+	docker compose ps
 
 init:
 	cp .env.example .env
