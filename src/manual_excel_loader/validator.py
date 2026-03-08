@@ -79,6 +79,17 @@ def validate_datetime(
         )
     return Ok(value.strftime(fmt))
 
+def validate_time(value: Any) -> CellResult[str]:
+    """Parse time value and return HH:MM:SS string. No date-range check."""
+    try:
+        if isinstance(value, time):
+            return Ok(value.strftime("%H:%M:%S"))
+        if isinstance(value, datetime):
+            return Ok(value.strftime("%H:%M:%S"))
+        parsed = dateutil_parser.parse(str(value))
+        return Ok(parsed.strftime("%H:%M:%S"))
+    except (ValueError, TypeError):
+        return Err("could not parse time value")
 
 def validate_boolean_gp(value: Any) -> CellResult[str]:
     # Full list per GP docs: https://docs.vmware.com/en/VMware-Greenplum/7/
@@ -138,9 +149,7 @@ _GP_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     "date": lambda v: validate_datetime(
         v, datetime(1, 1, 1), datetime(9999, 12, 31), "%Y-%m-%d"
     ),
-    "time": lambda v: validate_datetime(
-        v, datetime(1900, 1, 1, 0, 0, 0), datetime(1900, 1, 1, 23, 59, 59), "%H:%M:%S"
-    ),
+    "time": validate_time,
     # GP timestamp range: 4713 BC – 294276 AD
     "timestamp": lambda v: validate_datetime(
         v, datetime(1, 1, 1), datetime(9999, 12, 31, 23, 59, 59)
