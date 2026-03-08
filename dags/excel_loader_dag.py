@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from airflow.decorators import dag, task
-from airflow.sdk.definitions.param import Param
+from airflow.models.param import Param
 from airflow.utils.email import send_email
 
 log = logging.getLogger(__name__)

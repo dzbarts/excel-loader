@@ -7,7 +7,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW_SECRET_KEY}'
   volumes:
-    - ../dags:/opt/airflow/dags
+    - ./dags:/opt/airflow/dags
     - airflow_logs:/opt/airflow/logs
   networks:
     - de_network
