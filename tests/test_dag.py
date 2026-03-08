@@ -21,18 +21,22 @@ from unittest.mock import MagicMock, patch
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_context(params: dict) -> dict:
-    """Минимальный Airflow context для тестов."""
-    return {
-        "params": params,
-        "task_instance": MagicMock(),
-        "run_id": "test_run_id",
-    }
+def _make_context(params: dict | None = None) -> dict:
+    """Минимальный Airflow context для тестов.
+
+    Для _validate_params_fn (читает context["params"]) — передаём params.
+    Для _load_excel_fn (получает params позиционно) — не передаём,
+    иначе "got multiple values for argument 'params'".
+    """
+    ctx: dict = {"task_instance": MagicMock(), "run_id": "test_run_id"}
+    if params is not None:
+        ctx["params"] = params
+    return ctx
 
 
 BASE_PARAMS = {
     "input_file": "/tmp/test.xlsx",
-    "db_type": "gp",
+    "db_type": "greenplum",
     "table_name": "test_table",
     "scheme_name": "test_schema",
     "dump_type": "sql",
@@ -90,7 +94,7 @@ class TestValidateParams:
         params = {**BASE_PARAMS, "input_file": str(f)}
         result = _validate_params_fn(**_make_context(params))
         assert result["input_file"] == str(f)
-        assert result["db_type"] == "gp"
+        assert result["db_type"] == "greenplum"  # validate_params нормализует алиас
 
 
 # ── load_excel ────────────────────────────────────────────────────────────────
@@ -117,7 +121,7 @@ class TestLoadExcel:
         params = {**BASE_PARAMS, "input_file": str(f)}
 
         with patch("manual_excel_loader.load", return_value=self._mock_result()) as mock_load:
-            result = _load_excel_fn(params, **_make_context(params))
+            result = _load_excel_fn(params, **_make_context())
 
         mock_load.assert_called_once()
         assert result["rows_written"] == 42
@@ -133,9 +137,9 @@ class TestLoadExcel:
         f.write_bytes(b"PK")
         params = {**BASE_PARAMS, "input_file": str(f)}
 
-        with patch("manual_excel_loader.load", side_effect=DataValidationError("bad", errors=[])):
+        with patch("manual_excel_loader.load", side_effect=DataValidationError("bad", validation_result=MagicMock())):
             with pytest.raises(DataValidationError):
-                _load_excel_fn(params, **_make_context(params))
+                _load_excel_fn(params, **_make_context())
 
     def test_file_read_error_reraises(self, tmp_path):
         """FileReadError пробрасывается наверх."""
@@ -148,7 +152,7 @@ class TestLoadExcel:
 
         with patch("manual_excel_loader.load", side_effect=FileReadError("oops")):
             with pytest.raises(FileReadError):
-                _load_excel_fn(params, **_make_context(params))
+                _load_excel_fn(params, **_make_context())
 
     def test_notify_email_called_on_error(self, tmp_path):
         """При ошибке и notify_email → send_email вызывается."""
@@ -159,10 +163,10 @@ class TestLoadExcel:
         f.write_bytes(b"PK")
         params = {**BASE_PARAMS, "input_file": str(f), "notify_email": "ops@example.com"}
 
-        with patch("manual_excel_loader.load", side_effect=DataValidationError("bad", errors=[])), \
+        with patch("manual_excel_loader.load", side_effect=DataValidationError("bad", validation_result=MagicMock())), \
              patch("dags.excel_loader_dag.send_email") as mock_email:
             with pytest.raises(DataValidationError):
-                _load_excel_fn(params, **_make_context(params))
+                _load_excel_fn(params, **_make_context())
 
         mock_email.assert_called_once()
         assert "ops@example.com" in str(mock_email.call_args)
@@ -176,10 +180,10 @@ class TestLoadExcel:
         f.write_bytes(b"PK")
         params = {**BASE_PARAMS, "input_file": str(f), "notify_email": ""}
 
-        with patch("manual_excel_loader.load", side_effect=DataValidationError("bad", errors=[])), \
+        with patch("manual_excel_loader.load", side_effect=DataValidationError("bad", validation_result=MagicMock())), \
              patch("dags.excel_loader_dag.send_email") as mock_email:
             with pytest.raises(DataValidationError):
-                _load_excel_fn(params, **_make_context(params))
+                _load_excel_fn(params, **_make_context())
 
         mock_email.assert_not_called()
 
@@ -193,7 +197,7 @@ class TestLoadExcel:
         params = {**BASE_PARAMS, "input_file": str(f)}
 
         with patch("manual_excel_loader.load", return_value=self._mock_result()):
-            result = _load_excel_fn(params, **_make_context(params))
+            result = _load_excel_fn(params, **_make_context())
 
         assert isinstance(json.dumps(result), str)
 
@@ -214,7 +218,7 @@ class TestReport:
             "has_errors": False,
         }
         with caplog.at_level(logging.INFO):
-            _report_fn(result, **_make_context(BASE_PARAMS))
+            _report_fn(result, **_make_context())
 
         assert "100" in caplog.text
 
@@ -230,7 +234,7 @@ class TestReport:
             "has_errors": True,
         }
         with caplog.at_level(logging.WARNING):
-            _report_fn(result, **_make_context(BASE_PARAMS))
+            _report_fn(result, **_make_context())
 
         assert any(
             "ошибки" in r.message.lower() or "error" in r.message.lower()

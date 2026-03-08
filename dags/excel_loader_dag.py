@@ -32,6 +32,16 @@ from airflow.utils.email import send_email
 
 log = logging.getLogger(__name__)
 
+# ── Алиасы db_type для Airflow UI → внутренние enum-значения ─────────────────
+# В UI показываем короткие "gp"/"ch", но DatabaseType ожидает полные значения
+_DB_TYPE_ALIASES: dict[str, str] = {
+    "gp": "greenplum",
+    "ch": "clickhouse",
+    "greenplum": "greenplum",
+    "clickhouse": "clickhouse",
+}
+
+
 # ── DAG-level defaults ────────────────────────────────────────────────────────
 
 default_args = {
@@ -130,7 +140,7 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
 
     cfg = LoaderConfig(
         input_file=Path(params["input_file"]),
-        db_type=DatabaseType(params["db_type"]),
+        db_type=DatabaseType(_DB_TYPE_ALIASES.get(params["db_type"], params["db_type"])),
         table_name=params["table_name"],
         scheme_name=params["scheme_name"],
         dump_type=DumpType(params["dump_type"]),
@@ -154,7 +164,7 @@ def _load_excel_fn(params: dict[str, Any], **context: Any) -> dict[str, Any]:
     try:
         result = load(cfg)
     except DataValidationError as exc:
-        log.error("Ошибки валидации данных (%d ячеек): %s", len(exc.errors), exc)
+        log.error("Ошибки валидации данных (%d ячеек): %s", len(exc.validation_result.errors) if exc.validation_result else 0, exc)
         _maybe_notify(params, subject="[excel_loader] Ошибки валидации", body=str(exc))
         raise
     except FileReadError as exc:
