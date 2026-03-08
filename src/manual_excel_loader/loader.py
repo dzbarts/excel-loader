@@ -16,9 +16,6 @@ from .writers.sql_file import SqlFileWriter
 
 logger = logging.getLogger(__name__)
 
-# Encodings supported for output files.
-# encoding_input is kept in LoaderConfig for future CSV-reader support —
-# openpyxl reads xlsx as binary and ignores it.
 _SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
     "utf-8", "utf-16", "utf-16-le", "utf-16-be",
     "ascii", "latin1", "cp1252", "cp1251", "cp866",
@@ -30,7 +27,6 @@ _SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
 # ── Config helpers ────────────────────────────────────────────────────────────
 
 def _validate_config(config: LoaderConfig) -> None:
-    """Raise ConfigurationError for any invalid config values."""
     if config.encoding_output.lower() not in _SUPPORTED_ENCODINGS:
         raise ConfigurationError(
             f"Unsupported encoding_output '{config.encoding_output}'. "
@@ -51,7 +47,6 @@ def _build_writer_config(config: LoaderConfig, output_path: Path) -> FileWriterC
 
 
 def _resolve_output_path(config: LoaderConfig) -> Path:
-    """Generate a timestamped output path next to the input file."""
     ts = datetime.now().strftime("%d%m%y_%H%M%S")
     suffix = f".{config.dump_type.value}"
     return config.input_file.with_name(
@@ -65,16 +60,10 @@ def _resolve_reader(
     config: LoaderConfig,
 ) -> tuple[SheetData, LoaderConfig, TemplateConfig | None]:
     """
-    Detect the input format and return (sheet_data, effective_config, template_config).
+    Detect input format → return (sheet_data, effective_config, template_config).
 
-    For regular Excel files: template_config is None, config unchanged.
-    For template Excel files: template_config carries the parsed metadata,
-        and effective_config is a copy of config with skip_rows and dtypes
-        filled in from the template — so the rest of load() doesn't need
-        to know about templates at all.
-
-    This is the single decision point for future format expansion
-    (CSV reader, SQL reader, etc. will be added here).
+    For regular Excel: template_config is None, config unchanged.
+    For template Excel: config copy with skip_rows/dtypes merged from template.
     """
     path = config.input_file
     suffix = path.suffix.lower()
@@ -84,23 +73,22 @@ def _resolve_reader(
             logger.info("Detected ODS template format: %s", path.name)
             tmpl = read_template_config(path)
 
-            # Merge template metadata into a config copy.
-            # dataclasses.replace() is the correct tool: it creates a new
-            # frozen-safe copy with only the specified fields changed —
-            # the original config object is never mutated.
             effective = dataclasses.replace(
                 config,
                 skip_rows=tmpl.skip_rows,
-                # Template always targets GP; db_type from user config is respected
-                # but dtypes come from the template.
                 dtypes=tmpl.dtypes if config.dtypes is None else config.dtypes,
             )
+
+            # skip_header_validation=True because the header row on 'data'
+            # contains Russian display names, not technical EN column names.
+            # The actual output headers come from TemplateConfig.headers.
             read_cfg = ExcelReadConfig(
                 path=path,
                 sheet_name="data",
                 skip_rows=tmpl.skip_rows,
                 skip_cols=config.skip_cols,
                 max_row=config.max_row,
+                skip_header_validation=True,
             )
             sheet = read_excel(read_cfg)
             return sheet, effective, tmpl
@@ -117,7 +105,6 @@ def _resolve_reader(
             sheet = read_excel(read_cfg)
             return sheet, config, None
 
-    # Future: CSV, SQL/TXT readers will go here
     raise ConfigurationError(
         f"Unsupported input format: '{suffix}'. "
         f"Supported: .xlsx, .xls"
@@ -127,9 +114,8 @@ def _resolve_reader(
 # ── Row-level helpers ─────────────────────────────────────────────────────────
 
 def _make_cell_name(row_idx: int, col_idx: int, skip_rows: int, skip_cols: int) -> str:
-    """Convert 0-based row/col indices to Excel notation, e.g. 'B5'."""
     col = col_idx + skip_cols + 1
-    row = row_idx + skip_rows + 2  # +1 for header row, +1 for 1-based
+    row = row_idx + skip_rows + 2
     letter = ""
     while col > 0:
         col, remainder = divmod(col - 1, 26)
@@ -142,13 +128,6 @@ def _build_validators(
     dtypes: dict[str, str],
     db_type: DatabaseType,
 ) -> dict[str, object]:
-    """
-    Build a {col_name: validator_fn} mapping.
-
-    Only columns present in BOTH headers and dtypes get validators.
-    Columns in headers but not in dtypes → pass-through (no validation).
-    Columns in dtypes but not in headers → silently ignored.
-    """
     from .validator import get_validator
     return {
         col: get_validator(dtype, db_type)
@@ -166,14 +145,6 @@ def _validate_row(
     result: FileValidationResult,
     key_columns: frozenset[str] | None = None,
 ) -> tuple:
-    """
-    Validate one row, returning a (possibly coerced) output tuple.
-
-    Valid cells    → converted value (e.g. float for decimal, str for date).
-    Invalid cells  → None; CellValidationError appended to result.
-    No validator   → value passed through unchanged.
-    Key col + None → additional error recorded even if type was valid.
-    """
     from .result import Ok
 
     output = []
@@ -213,7 +184,6 @@ def _validate_row(
 
 
 def _apply_row_transforms(row: tuple, config: LoaderConfig) -> tuple:
-    """Strip whitespace and/or coerce empty strings to None."""
     if config.is_strip:
         row = tuple(v.strip() if isinstance(v, str) else v for v in row)
     if config.set_empty_str_to_null:
@@ -227,22 +197,15 @@ def _insert_fixed_values(
     fixed_values: dict[str, str],
 ) -> tuple:
     """
-    Insert template fixed-value columns into the row at the correct positions.
+    Insert template fixed-value columns into the row at their correct positions.
 
-    fixed_values columns are NOT present in the data rows read from Excel —
-    they come from specific cells on the 'data' sheet (parsed during template
-    config reading). We insert them by position based on the full headers list.
-
-    Example:
-        headers      = ["source_system", "id", "name"]  (full output order)
-        data row     = (1, "Alice")                      (only "table" columns)
-        fixed_values = {"source_system": "ГПН"}
-        result       = ("ГПН", 1, "Alice")
+    fixed_values columns are NOT in the raw data rows — they come from
+    specific cells on the 'data' sheet. We reconstruct the full row by
+    walking the canonical header order from TemplateConfig.
     """
     if not fixed_values:
         return row
 
-    # Reconstruct row by walking the full headers list
     data_iter = iter(row)
     result = []
     for col in headers:
@@ -252,19 +215,29 @@ def _insert_fixed_values(
             try:
                 result.append(next(data_iter))
             except StopIteration:
-                # More fixed columns than expected — header/data mismatch
                 result.append(None)
     return tuple(result)
 
 
 def _append_extra_columns(
     row: tuple,
-    headers: list[str],
+    sheet_headers: list[str],
     config: LoaderConfig,
 ) -> tuple:
-    """Append timestamp and wf_load_idn columns if configured."""
+    """
+    Append timestamp and wf_load_idn to the row if configured.
+
+    IMPORTANT: we check against sheet_headers (the original columns from the
+    file), NOT against the final output headers list. The output headers list
+    already contains 'load_dttm' / 'write_ts' because we added it during
+    header construction — so checking against it would always return False
+    and the value would never be appended to the row.
+
+    Rule: if the column does NOT exist in the source file → we generate its
+    value and append it. If it already exists in the file → user data wins.
+    """
     row = list(row)
-    if config.timestamp and config.timestamp.value not in headers:
+    if config.timestamp and config.timestamp.value not in sheet_headers:
         row.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     if config.wf_load_idn:
         row.append(config.input_file.name)
@@ -286,19 +259,6 @@ def load(config: LoaderConfig) -> LoadResult:
         COERCE  — validate; replace invalid cells with NULL, always write
         VERIFY  — validate; raise DataValidationError if errors, do not write
         RAISE   — validate; replace invalid cells with NULL, raise if errors
-
-    Args:
-        config: Full loader configuration.
-
-    Returns:
-        LoadResult with rows_written and output_path.
-
-    Raises:
-        ConfigurationError: if config is invalid or dtypes required but missing.
-        DataValidationError: if error_mode is VERIFY or RAISE and errors found.
-        FileReadError: if the file cannot be read.
-        HeaderValidationError: if headers are invalid.
-        TemplateError: if template structure is invalid.
     """
     _validate_config(config)
 
@@ -311,8 +271,6 @@ def load(config: LoaderConfig) -> LoadResult:
     # ── 1. Detect format and read ─────────────────────────────────────────
     sheet, effective_config, tmpl = _resolve_reader(config)
 
-    # After resolving the reader, check dtypes requirement.
-    # We check here (not before) because templates provide dtypes automatically.
     if needs_validation and not effective_config.dtypes:
         raise ConfigurationError(
             "dtypes must be provided when error_mode is not IGNORE. "
@@ -320,13 +278,17 @@ def load(config: LoaderConfig) -> LoadResult:
         )
 
     # ── 2. Build output headers ───────────────────────────────────────────
-    # Start from data headers, insert fixed-value column names at their
-    # positions (from template), then append timestamp / wf_load_idn.
+    # sheet.headers = raw headers from the file (Russian for templates)
+    # For templates, we use TemplateConfig.headers (EN technical names).
     if tmpl is not None:
-        # Template defines the canonical output column order
         headers = list(tmpl.headers)
     else:
         headers = list(sheet.headers)
+
+    # Keep a reference to source-file headers BEFORE adding extra columns.
+    # _append_extra_columns uses this to decide whether to generate a value
+    # or trust that the file already provides it.
+    sheet_headers = list(sheet.headers)
 
     if effective_config.timestamp and effective_config.timestamp.value not in headers:
         headers.append(effective_config.timestamp.value)
@@ -336,14 +298,14 @@ def load(config: LoaderConfig) -> LoadResult:
     # ── 3. Build validators ───────────────────────────────────────────────
     validators: dict[str, object] = {}
     if needs_validation and effective_config.dtypes:
-        # For templates we validate against the "table" columns only —
-        # fixed-value columns are constants, they don't need cell-level validation.
-        validate_headers = (
+        # For templates: validate "table" columns only — fixed-value columns
+        # are constants, validating them at the cell level is meaningless.
+        validate_against = (
             [h for h in sheet.headers if h not in (tmpl.fixed_values or {})]
             if tmpl else sheet.headers
         )
         validators = _build_validators(
-            validate_headers,
+            validate_against,
             effective_config.dtypes,
             effective_config.db_type,
         )
@@ -362,11 +324,10 @@ def load(config: LoaderConfig) -> LoadResult:
                     row_idx, effective_config, validation_result,
                     key_columns=key_columns,
                 )
-            # Insert fixed values AFTER validation — they are constants,
-            # not data from the file, so validating them is meaningless.
             if tmpl is not None and tmpl.fixed_values:
                 row = _insert_fixed_values(row, tmpl.headers, tmpl.fixed_values)
-            row = _append_extra_columns(row, headers, effective_config)
+            # Pass sheet_headers (source file columns), not the final headers list
+            row = _append_extra_columns(row, sheet_headers, effective_config)
             yield row
 
     # ── 5. Write (or verify-only) ─────────────────────────────────────────
@@ -381,10 +342,8 @@ def load(config: LoaderConfig) -> LoadResult:
                 f"Validation failed: {len(validation_result.errors)} error(s).",
                 validation_result,
             )
-        logger.info(
-            "VERIFY passed: %d rows checked, no errors. File: %s",
-            rows_written, config.input_file.name,
-        )
+        logger.info("VERIFY passed: %d rows, no errors. File: %s",
+                    rows_written, config.input_file.name)
         return LoadResult(rows_written=rows_written, output_path=output_path)
 
     writer_config = _build_writer_config(effective_config, output_path)
@@ -408,10 +367,7 @@ def load(config: LoaderConfig) -> LoadResult:
             validation_result,
         )
 
-    logger.info(
-        "%s written: %d rows → %s",
-        effective_config.dump_type.value.upper(),
-        rows_written,
-        output_path.name,
-    )
+    logger.info("%s written: %d rows → %s",
+                effective_config.dump_type.value.upper(),
+                rows_written, output_path.name)
     return LoadResult(rows_written=rows_written, output_path=output_path)

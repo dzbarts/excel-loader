@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
@@ -18,13 +18,18 @@ class ExcelReadConfig:
 
     Frozen so that config cannot be accidentally mutated mid-read,
     which would make generator behaviour unpredictable.
-    """
 
+    skip_header_validation: when True, header cells are lowercased/stripped
+        but NOT validated against the Latin-only regex. Used for template
+        files where the header row contains Russian display names — the
+        actual column names come from TemplateConfig, not from the sheet.
+    """
     path: Path
     sheet_name: str | None = None
     skip_rows: int = 0
     skip_cols: int = 0
     max_row: int | None = None
+    skip_header_validation: bool = False
 
 
 @dataclass
@@ -35,14 +40,31 @@ class SheetData:
     rows is a generator — the workbook stays open until the generator
     is exhausted or garbage-collected. Do not close the file externally.
     """
-
     headers: list[str]
     rows: Iterator[tuple]
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+# ── Internal helpers ───────────────────────────────────────────────────────────
 
 _VALID_HEADER = re.compile(r"^[a-z0-9_]+$")
+
+
+def _read_headers_raw(raw: list) -> list[str]:
+    """
+    Normalise a raw header row without validating character set.
+
+    Used for template files where headers are Russian display names.
+    These names are never used as output column names — TemplateConfig
+    provides the technical EN names — but we still need to read the row
+    to correctly count data rows.
+    """
+    last_non_none = max(
+        (i for i, v in enumerate(raw) if v is not None),
+        default=-1,
+    )
+    if last_non_none == -1:
+        raise HeaderValidationError("header row is empty or all cells are None")
+    return [str(v).lower().strip() for v in raw[: last_non_none + 1]]
 
 
 def _validate_headers(raw: list) -> list[str]:
@@ -53,7 +75,6 @@ def _validate_headers(raw: list) -> list[str]:
         HeaderValidationError: if headers are empty, contain invalid
             characters, or contain duplicates.
     """
-    # Drop trailing None cells (empty columns to the right)
     last_non_none = max(
         (i for i, v in enumerate(raw) if v is not None),
         default=-1,
@@ -63,7 +84,6 @@ def _validate_headers(raw: list) -> list[str]:
 
     headers = [str(v).lower().strip() for v in raw[: last_non_none + 1]]
 
-    # Validate each name individually for clear error messages
     for h in headers:
         if not _VALID_HEADER.fullmatch(h):
             raise HeaderValidationError(
@@ -71,7 +91,6 @@ def _validate_headers(raw: list) -> list[str]:
                 "Only lowercase Latin letters, digits and underscores are allowed."
             )
 
-    # Duplicates check after individual validation so the error is specific
     if len(headers) != len(set(headers)):
         seen: set[str] = set()
         duplicates = [h for h in headers if h in seen or seen.add(h)]  # type: ignore[func-returns-value]
@@ -82,7 +101,7 @@ def _validate_headers(raw: list) -> list[str]:
     return headers
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+# ── Public interface ───────────────────────────────────────────────────────────
 
 def read_excel(config: ExcelReadConfig) -> SheetData:
     """
@@ -91,28 +110,22 @@ def read_excel(config: ExcelReadConfig) -> SheetData:
 
     The workbook is held open for the lifetime of the returned generator.
     It is closed automatically when:
-      - the generator is fully exhausted, or
-      - the generator is garbage-collected / explicitly closed.
-
-    This is safe because the ``finally`` block inside ``_iter_rows`` runs
-    in all cases — normal completion, ``break``, or uncaught exception in
-    the consumer.
+    - the generator is fully exhausted, or
+    - the generator is garbage-collected / explicitly closed.
 
     Args:
         config: read parameters (path, sheet, offsets, row limit).
 
     Returns:
-        SheetData with validated headers and a lazy row iterator.
+        SheetData with headers and a lazy row iterator.
 
     Raises:
         FileReadError: if the file does not exist or cannot be opened.
-        HeaderValidationError: if the header row is invalid.
+        HeaderValidationError: if the header row is invalid (when validation enabled).
     """
     warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
     try:
-        # read_only=True — streaming mode, much lower memory for large files.
-        # data_only=True — return cell values, not formula strings.
         wb = openpyxl.load_workbook(config.path, data_only=True, read_only=True)
     except FileNotFoundError:
         raise FileReadError(f"file not found: {config.path}")
@@ -129,8 +142,6 @@ def read_excel(config: ExcelReadConfig) -> SheetData:
             f"Available sheets: {available}"
         )
 
-    # Read the header row eagerly — we need it before returning SheetData.
-    # iter_rows with min_row=max_row reads exactly one row.
     header_row_num = config.skip_rows + 1
     try:
         header_raw = next(
@@ -148,28 +159,23 @@ def read_excel(config: ExcelReadConfig) -> SheetData:
         )
 
     try:
-        headers = _validate_headers(list(header_raw))
+        if config.skip_header_validation:
+            headers = _read_headers_raw(list(header_raw))
+        else:
+            headers = _validate_headers(list(header_raw))
     except HeaderValidationError:
         wb.close()
         raise
 
     def _iter_rows() -> Iterator[tuple]:
-        """
-        Lazy generator: yields one data row at a time.
-
-        The ``finally`` block guarantees the workbook is closed when
-        the generator is done — whether by exhaustion, ``break``, or
-        an exception in the consumer.
-        """
         try:
             for row in sheet.iter_rows(
-                min_row=config.skip_rows + 2,          # first row after header
+                min_row=config.skip_rows + 2,
                 min_col=config.skip_cols + 1,
                 max_col=config.skip_cols + len(headers),
                 max_row=config.max_row,
                 values_only=True,
             ):
-                # Skip rows where every cell is None (blank rows in the middle)
                 if any(cell is not None for cell in row):
                     yield row
         finally:
