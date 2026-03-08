@@ -145,10 +145,32 @@ def _validate_row(
     result: FileValidationResult,
     key_columns: frozenset[str] | None = None,
 ) -> tuple:
+    """
+    Validate one row, returning a (possibly coerced) output tuple.
+
+    Key-column NULL check happens BEFORE the type validator.
+    A NULL in a key column is its own distinct error ("must not be NULL"),
+    not a type error ("not an integer"). We short-circuit with `continue`
+    so that a single NULL cell does not produce two errors.
+    """
     from .result import Ok
 
     output = []
     for col_idx, (col_name, value) in enumerate(zip(headers, row)):
+
+        # ── Key-column NULL guard (before type validation) ────────────────
+        if key_columns and col_name in key_columns and value is None:
+            result.add_error(CellValidationError(
+                cell_name=_make_cell_name(
+                    row_idx, col_idx, config.skip_rows, config.skip_cols
+                ),
+                cell_value=value,
+                expected_type=config.dtypes.get(col_name, "unknown"),
+                message="key column must not be NULL",
+            ))
+            output.append(None)
+            continue
+
         validate = validators.get(col_name)
 
         if validate is None:
@@ -158,17 +180,7 @@ def _validate_row(
         cell_result = validate(value)
 
         if isinstance(cell_result, Ok):
-            converted = cell_result.value
-            if key_columns and col_name in key_columns and converted is None:
-                result.add_error(CellValidationError(
-                    cell_name=_make_cell_name(
-                        row_idx, col_idx, config.skip_rows, config.skip_cols
-                    ),
-                    cell_value=value,
-                    expected_type=config.dtypes[col_name],
-                    message="key column must not be NULL",
-                ))
-            output.append(converted)
+            output.append(cell_result.value)
         else:
             output.append(None)
             result.add_error(CellValidationError(
@@ -176,7 +188,7 @@ def _validate_row(
                     row_idx, col_idx, config.skip_rows, config.skip_cols
                 ),
                 cell_value=value,
-                expected_type=config.dtypes[col_name],
+                expected_type=config.dtypes.get(col_name, "unknown"),
                 message=cell_result.message,
             ))
 
@@ -199,9 +211,9 @@ def _insert_fixed_values(
     """
     Insert template fixed-value columns into the row at their correct positions.
 
-    fixed_values columns are NOT in the raw data rows — they come from
-    specific cells on the 'data' sheet. We reconstruct the full row by
-    walking the canonical header order from TemplateConfig.
+    fixed_values columns are NOT in the raw data rows — they come from specific
+    cells on the 'data' sheet. We reconstruct the full row by walking the
+    canonical header order from TemplateConfig.
     """
     if not fixed_values:
         return row
@@ -278,7 +290,7 @@ def load(config: LoaderConfig) -> LoadResult:
         )
 
     # ── 2. Build output headers ───────────────────────────────────────────
-    # sheet.headers = raw headers from the file (Russian for templates)
+    # sheet.headers = raw headers from the file (Russian for templates).
     # For templates, we use TemplateConfig.headers (EN technical names).
     if tmpl is not None:
         headers = list(tmpl.headers)
@@ -301,7 +313,7 @@ def load(config: LoaderConfig) -> LoadResult:
         # For templates: validate "table" columns only — fixed-value columns
         # are constants, validating them at the cell level is meaningless.
         validate_against = (
-            [h for h in sheet.headers if h not in (tmpl.fixed_values or {})]
+            [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
             if tmpl else sheet.headers
         )
         validators = _build_validators(
@@ -315,17 +327,25 @@ def load(config: LoaderConfig) -> LoadResult:
     # ── 4. Define row processing pipeline ────────────────────────────────
     validation_result = FileValidationResult()
 
+    # Headers used as the column-name reference inside _validate_row.
+    #
+    # For templates: use EN technical names from TemplateConfig, excluding
+    # fixed-value columns (they are not present in raw data rows at all).
+    # sheet.headers contains Russian display names — looking them up in the
+    # validators dict (which is keyed on EN names) would always miss.
+    #
+    # For regular Excel: sheet.headers are already the correct EN names.
     _validate_headers_for_row = (
         [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
         if tmpl is not None else list(sheet.headers)
     )
-    
+
     def _processed_rows():
         for row_idx, raw_row in enumerate(sheet.rows):
             row = _apply_row_transforms(raw_row, effective_config)
             if needs_validation:
                 row = _validate_row(
-                    row, _validate_headers_for_row, validators,
+                    row, _validate_headers_for_row, validators,  # ← EN names, not sheet.headers
                     row_idx, effective_config, validation_result,
                     key_columns=key_columns,
                 )
