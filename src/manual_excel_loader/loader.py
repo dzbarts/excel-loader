@@ -325,7 +325,7 @@ def load(config: LoaderConfig) -> LoadResult:
             row = _apply_row_transforms(raw_row, effective_config)
             if needs_validation:
                 row = _validate_row(
-                    row, sheet.headers, validators,
+                    row, _validate_headers_for_row, validators,
                     row_idx, effective_config, validation_result,
                     key_columns=key_columns,
                 )
