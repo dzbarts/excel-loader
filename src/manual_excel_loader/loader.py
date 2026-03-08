@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from .enums import DatabaseType, DumpType, ErrorMode
 from .exceptions import ConfigurationError, DataValidationError
-from .models import LoaderConfig, CellValidationError, FileValidationResult
+from .models import LoaderConfig, LoadResult, CellValidationError, FileValidationResult
 from .reader import ExcelReadConfig, read_excel
 from .validator import get_validator
 from .writers.base import FileWriterConfig
@@ -14,13 +13,6 @@ from .writers.csv_file import CsvFileWriter
 from .writers.sql_file import SqlFileWriter
 
 
-# ── Result ────────────────────────────────────────────────────────────────────
-
-@dataclass
-class LoadResult:
-    """Minimal summary returned by load(). Not statistics — just facts."""
-    rows_written: int
-    output_path: Path
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
