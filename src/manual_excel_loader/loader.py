@@ -315,6 +315,11 @@ def load(config: LoaderConfig) -> LoadResult:
     # ── 4. Define row processing pipeline ────────────────────────────────
     validation_result = FileValidationResult()
 
+    _validate_headers_for_row = (
+        [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
+        if tmpl is not None else list(sheet.headers)
+    )
+    
     def _processed_rows():
         for row_idx, raw_row in enumerate(sheet.rows):
             row = _apply_row_transforms(raw_row, effective_config)
