@@ -17,20 +17,17 @@ from manual_excel_loader.writers.base import DbWriterConfig
 @pytest.fixture
 def pg_config():
     return DbWriterConfig(
-        dsn="postgresql://user:pass@localhost:5432/testdb",
-        table_name="test_table",
-        scheme_name="test_schema",
-        batch_size=2,
+        host="localhost", port=5432, database="testdb",
+        user="user", password="pass",
+        table_name="test_table", scheme_name="test_schema", batch_size=2,
     )
-
 
 @pytest.fixture
 def ch_config():
     return DbWriterConfig(
-        dsn="clickhouse://user:pass@localhost:9000/testdb",
-        table_name="test_table",
-        scheme_name="test_db",
-        batch_size=2,
+        host="localhost", port=9000, database="testdb",
+        user="user", password="pass",
+        table_name="test_table", scheme_name="test_db", batch_size=2,
     )
 
 
@@ -149,7 +146,7 @@ class TestClickHouseWriter:
         """client.execute вызывается для каждого батча."""
         mock_client = MagicMock()
 
-        with patch("clickhouse_driver.Client.from_url", return_value=mock_client):
+        with patch("clickhouse_driver.Client", return_value=mock_client):
             writer = ClickHouseWriter(ch_config)
             count = writer.write(HEADERS, ROWS)
 
@@ -161,7 +158,7 @@ class TestClickHouseWriter:
         """clickhouse-driver получает список словарей."""
         mock_client = MagicMock()
 
-        with patch("clickhouse_driver.Client.from_url", return_value=mock_client):
+        with patch("clickhouse_driver.Client", return_value=mock_client):
             ClickHouseWriter(ch_config).write(HEADERS, ROWS[:1])
 
         _, kwargs = mock_client.execute.call_args_list[0]
@@ -190,7 +187,7 @@ class TestClickHouseWriter:
         """Пустой список → 0 записей, execute не вызывается."""
         mock_client = MagicMock()
 
-        with patch("clickhouse_driver.Client.from_url", return_value=mock_client):
+        with patch("clickhouse_driver.Client", return_value=mock_client):
             count = ClickHouseWriter(ch_config).write(HEADERS, [])
 
         assert count == 0

@@ -66,7 +66,12 @@ class PostgresWriter(BaseWriter):
 
         total_written = 0
 
-        with psycopg2.connect(self._config.dsn) as conn:
+        cfg = self._config
+        conn_str = (
+            f"host={cfg.host} port={cfg.port} dbname={cfg.database} "
+            f"user={cfg.user} password={cfg.password}"
+        )
+        with psycopg2.connect(conn_str) as conn:
             with conn.cursor() as cur:
                 for batch in _batched(rows, self._config.batch_size):
                     cur.executemany(sql, batch)
@@ -112,7 +117,11 @@ class ClickHouseWriter(BaseWriter):
         # scheme_name в CH трактуется как database
         qualified = f"{self._config.scheme_name}.{self._config.table_name}"
 
-        client = Client.from_url(self._config.dsn)
+        cfg = self._config
+        client = Client(
+            host=cfg.host, port=cfg.port,
+            database=cfg.database, user=cfg.user, password=cfg.password,
+        )
         sql = f"INSERT INTO {qualified} ({', '.join(headers)}) VALUES"
 
         total_written = 0
