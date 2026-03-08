@@ -10,11 +10,11 @@ import pytest
 
 # We test the private escape functions directly — they are the most critical
 # correctness boundary and easiest to break silently.
-from src.manual_excel_loader.writers.sql_file import _escape_gp, _escape_ch, _format_insert
-from src.manual_excel_loader.writers.sql_file import SqlFileWriter
-from src.manual_excel_loader.writers.csv_file import CsvFileWriter
-from src.manual_excel_loader.writers.base import FileWriterConfig
-from src.manual_excel_loader.enums import DatabaseType
+from manual_excel_loader.writers.sql_file import _escape_gp, _escape_ch, _format_insert
+from manual_excel_loader.writers.sql_file import SqlFileWriter
+from manual_excel_loader.writers.csv_file import CsvFileWriter
+from manual_excel_loader.writers.base import FileWriterConfig
+from manual_excel_loader.enums import DatabaseType
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

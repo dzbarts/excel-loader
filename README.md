@@ -27,27 +27,26 @@
 
 ```
 excel-loader/
-├── dags/
-│   └── excel_loader_dag.py          # Airflow DAG
-├── src/
-│   └── manual_excel_loader/
+├── dags/                            ← копировать целиком в $AIRFLOW_HOME/dags/
+│   ├── excel_loader_dag.py          # Airflow DAG
+│   └── manual_excel_loader/        # пакет лежит рядом с DAG — pip install не нужен
 │       ├── readers/
-│       │   ├── excel_reader.py      # Чтение Excel
-│       │   ├── csv_reader.py        # Чтение CSV/TSV
-│       │   └── sql_reader.py        # Чтение SQL INSERT-файлов
+│       │   ├── excel_reader.py
+│       │   ├── csv_reader.py
+│       │   └── sql_reader.py
 │       ├── writers/
-│       │   ├── base.py              # Абстракция + конфиги
-│       │   ├── csv_file.py          # Запись в CSV
-│       │   ├── sql_file.py          # Запись в SQL
-│       │   └── database.py          # Прямая запись в GP / CH
+│       │   ├── base.py
+│       │   ├── csv_file.py
+│       │   ├── sql_file.py
+│       │   └── database.py
 │       ├── enums.py
 │       ├── exceptions.py
-│       ├── loader.py                # Основной API: load()
-│       ├── models.py                # LoaderConfig, LoadResult
-│       ├── result.py                # Ok / Err result types
-│       ├── template.py              # Обработка шаблонов ODS
-│       ├── validator.py             # Валидация типов данных
-│       └── ddl.py                   # Парсинг DDL → dict[col, type]
+│       ├── loader.py
+│       ├── models.py
+│       ├── result.py
+│       ├── template.py
+│       ├── validator.py
+│       └── ddl.py
 ├── tests/
 │   ├── test_dag.py
 │   ├── test_loader.py
@@ -58,17 +57,30 @@ excel-loader/
 │   ├── test_sql_reader.py
 │   ├── test_database_writers.py
 │   └── test_ddl.py
-├── docs/
-├── .env.example
-├── .gitignore
-├── docker-compose.yml               # Локальный Airflow + GP + CH
-├── Makefile
-└── pyproject.toml
+├── conftest.py                      # добавляет dags/ в sys.path для тестов
+├── pyproject.toml
+└── Makefile
 ```
 
 ---
 
-## Быстрый старт (Python API)
+## Деплой в Airflow
+
+Никакого `pip install` не требуется. Airflow автоматически добавляет папку `dags/`
+в `sys.path`, поэтому пакет `manual_excel_loader` импортируется напрямую.
+
+**Единственное действие:**
+```
+Скопировать папку dags/ целиком → $AIRFLOW_HOME/dags/
+```
+
+Зависимости (`openpyxl`, `python-dateutil`, `tqdm`) должны быть установлены
+в Python-окружении Airflow — они входят в стандартный список разрешённых пакетов
+корпоративного Nexus.
+
+---
+
+## Быстрый старт (Python API / ручной запуск)
 
 ```bash
 pip install -e ".[dev]"
@@ -98,37 +110,12 @@ print(f"Записано строк: {result.rows_written}")
 print(f"Выходной файл: {result.output_file}")
 ```
 
-> **Примечание:** `show_progress=True` удобен при ручном запуске из терминала.
-> При запуске через Airflow оставьте значение по умолчанию (`False`) —
-> tqdm-вывод засоряет логи воркера.
+> `show_progress=True` — только для ручного запуска из терминала.
+> При запуске через Airflow оставьте `False` (по умолчанию).
 
 ---
 
 ## Запуск через Airflow
-
-### Локально (Docker Compose)
-
-```bash
-# 1. Создай .env из шаблона и заполни пароли
-make init
-nano .env
-
-# 2. Запусти окружение
-make up
-
-# 3. Открой UI
-open http://localhost:8080  # admin / <твой пароль из .env>
-```
-
-Docker Compose поднимает: Airflow (webserver + scheduler),
-PostgreSQL (метаданные Airflow + GreenPlum-совместимый эндпоинт), ClickHouse.
-
-> **Важно:** пакет `manual_excel_loader` устанавливается внутри контейнера через
-> `_PIP_ADDITIONAL_REQUIREMENTS` в `.env`. Если после `make up` видишь
-> `ModuleNotFoundError` — убедись что переменная заполнена
-> (подробнее в разделе [Деплой пакета](#деплой-пакета-в-контейнер)).
-
-### Параметры DAG
 
 Запуск через **Trigger DAG w/ config** → вставить JSON:
 
@@ -173,64 +160,12 @@ PostgreSQL (метаданные Airflow + GreenPlum-совместимый эн
 
 ---
 
-## Деплой пакета в контейнер
-
-Airflow worker должен иметь доступ к пакету `manual_excel_loader`.
-
-Самый простой способ для локальной разработки — переменная окружения в `.env`:
-
-```dotenv
-# .env
-_PIP_ADDITIONAL_REQUIREMENTS=python-dateutil openpyxl tqdm
-```
-
-Пакет при этом монтируется как volume и устанавливается через `pip install -e`:
-
-```yaml
-# docker-compose.yml (уже настроено)
-volumes:
-  - ./src:/opt/airflow/src
-environment:
-  _PIP_ADDITIONAL_REQUIREMENTS: "..."
-```
-
-Для продакшн-деплоя — собери кастомный образ:
-
-```dockerfile
-FROM apache/airflow:2.9.1
-COPY src/ /opt/airflow/src/
-COPY pyproject.toml /opt/airflow/
-RUN pip install -e /opt/airflow/.[dev] --no-cache-dir
-```
-
-### Деплой в корпоративный Airflow (без Docker Compose)
-
-Если Docker Compose недоступен и файлы нужно перенести вручную:
-
-1. Скопировать DAG:
-   ```
-   dags/excel_loader_dag.py → $AIRFLOW_HOME/dags/
-   ```
-
-2. Скопировать пакет и установить на воркере:
-   ```bash
-   # Скопировать src/ на воркер, затем:
-   pip install -e /путь/к/src/ --no-cache-dir
-   ```
-   Зависимости (`openpyxl`, `python-dateutil`, `tqdm`) должны быть доступны
-   в корпоративном Nexus-реестре.
-
-3. Перезапустить воркер после установки.
-
----
-
 ## Прямая запись в БД
 
 ```python
 from manual_excel_loader.writers.base import DbWriterConfig
 from manual_excel_loader.writers.database import PostgresWriter, ClickHouseWriter
 
-# GreenPlum
 pg_writer = PostgresWriter(DbWriterConfig(
     host="localhost", port=5432, database="de_db",
     user="admin", password="...",
@@ -238,15 +173,6 @@ pg_writer = PostgresWriter(DbWriterConfig(
     batch_size=1000,
 ))
 pg_writer.write(headers=["id", "name"], rows=[(1, "Alice"), (2, "Bob")])
-
-# ClickHouse
-ch_writer = ClickHouseWriter(DbWriterConfig(
-    host="localhost", port=9000, database="default",
-    user="admin", password="...",
-    table_name="my_table", scheme_name="default",
-    batch_size=5000,
-))
-ch_writer.write(headers=["id", "name"], rows=[(1, "Alice")])
 ```
 
 ---
@@ -254,35 +180,9 @@ ch_writer.write(headers=["id", "name"], rows=[(1, "Alice")])
 ## Тесты
 
 ```bash
-# Все тесты
-make test
-
-# С покрытием (HTML-отчёт в htmlcov/)
-make coverage
-
-# Только DAG-тесты (без запущенного Airflow)
-make test-dag
-
-# Линтер
-make lint
-
-# Форматирование
-make fmt
-```
-
----
-
-## Разработка
-
-```bash
-# Клонировать
-git clone https://github.com/dzbarts/excel-loader.git
-cd excel-loader
-
-# Создать .env и виртуальное окружение
-make init
-python3 -m venv .venv && source .venv/bin/activate
-
-# Установить зависимости (включая dev)
-make install
+make test          # все тесты
+make coverage      # с покрытием (HTML в htmlcov/)
+make test-dag      # только DAG-тесты
+make lint          # линтер
+make fmt           # форматирование
 ```

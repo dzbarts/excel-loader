@@ -6,10 +6,10 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from src.manual_excel_loader.loader import load
-from src.manual_excel_loader.models import LoaderConfig, LoadResult
-from src.manual_excel_loader.enums import DatabaseType, DumpType, ErrorMode, TimestampField
-from src.manual_excel_loader.exceptions import (
+from manual_excel_loader.loader import load
+from manual_excel_loader.models import LoaderConfig, LoadResult
+from manual_excel_loader.enums import DatabaseType, DumpType, ErrorMode, TimestampField
+from manual_excel_loader.exceptions import (
     ConfigurationError,
     DataValidationError,
 )

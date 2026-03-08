@@ -65,7 +65,7 @@ BASE_PARAMS = {
 
 def _make_load_result(**overrides):
     """Создаёт реальный LoadResult (не MagicMock) с нужными полями."""
-    from src.manual_excel_loader.models import LoadResult
+    from manual_excel_loader.models import LoadResult
     defaults = dict(
         rows_written=42,
         rows_skipped=0,
@@ -170,7 +170,7 @@ class TestLoadExcel:
         """DataValidationError пробрасывается наверх (task failed)."""
         from dags.excel_loader_dag import _load_excel_fn
         from manual_excel_loader.exceptions import DataValidationError
-        from src.manual_excel_loader.models import FileValidationResult
+        from manual_excel_loader.models import FileValidationResult
 
         f = tmp_path / "data.xlsx"
         f.write_bytes(b"PK")
@@ -200,7 +200,7 @@ class TestLoadExcel:
         """При ошибке и notify_email → send_email вызывается."""
         from dags.excel_loader_dag import _load_excel_fn
         from manual_excel_loader.exceptions import DataValidationError
-        from src.manual_excel_loader.models import FileValidationResult
+        from manual_excel_loader.models import FileValidationResult
 
         f = tmp_path / "data.xlsx"
         f.write_bytes(b"PK")
@@ -219,7 +219,7 @@ class TestLoadExcel:
         """Без notify_email → send_email не вызывается."""
         from dags.excel_loader_dag import _load_excel_fn
         from manual_excel_loader.exceptions import DataValidationError
-        from src.manual_excel_loader.models import FileValidationResult
+        from manual_excel_loader.models import FileValidationResult
 
         f = tmp_path / "data.xlsx"
         f.write_bytes(b"PK")

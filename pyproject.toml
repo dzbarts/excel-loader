@@ -20,12 +20,16 @@ dev = [
     "ruff>=0.4,<1.0",
 ]
 
+# Пакет теперь лежит в dags/, а не в src/
+# Это позволяет копировать dags/ напрямую в $AIRFLOW_HOME/dags/
+# без pip install — Airflow добавляет dags/ в sys.path автоматически.
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["dags"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+# dags/ добавлен в pythonpath чтобы тесты импортировали пакет без установки
+pythonpath = ["dags"]
 
 [tool.ruff]
 line-length = 100
@@ -34,7 +38,7 @@ line-length = 100
 select = ["E", "F", "I", "N", "UP"]
 
 [tool.coverage.run]
-source = ["src/manual_excel_loader"]
+source = ["dags/manual_excel_loader"]
 omit = ["*/tests/*"]
 
 [tool.coverage.report]

@@ -10,10 +10,10 @@ from datetime import datetime
 
 import pytest
 
-from src.manual_excel_loader.enums import DatabaseType
-from src.manual_excel_loader.exceptions import UnsupportedDataTypeError
-from src.manual_excel_loader.result import Err, Ok
-from src.manual_excel_loader.validator import (
+from manual_excel_loader.enums import DatabaseType
+from manual_excel_loader.exceptions import UnsupportedDataTypeError
+from manual_excel_loader.result import Err, Ok
+from manual_excel_loader.validator import (
     get_validator,
     validate_boolean_gp,
     validate_datetime,

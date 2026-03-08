@@ -18,13 +18,13 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from src.manual_excel_loader.template import (
+from manual_excel_loader.template import (
     is_template,
     read_template_config,
     TemplateConfig,
     _parse_skip_rows,
 )
-from src.manual_excel_loader.exceptions import FileReadError, TemplateError
+from manual_excel_loader.exceptions import FileReadError, TemplateError
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
