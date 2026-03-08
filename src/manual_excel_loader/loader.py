@@ -5,6 +5,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from .readers.csv_reader import CsvReadConfig, read_csv
+from .readers.sql_reader import SqlReadConfig, read_sql
 from .enums import DatabaseType, DumpType, ErrorMode
 from .exceptions import ConfigurationError, DataValidationError
 from .models import LoaderConfig, LoadResult, CellValidationError, FileValidationResult
@@ -104,6 +106,46 @@ def _resolve_reader(
             )
             sheet = read_excel(read_cfg)
             return sheet, config, None
+    
+    if suffix in (".csv", ".tsv"):
+        logger.info("Detected CSV format: %s", path.name)
+        csv_cfg = CsvReadConfig(
+            path=path,
+            delimiter="\t" if suffix == ".tsv" else config.delimiter,
+            encoding=config.encoding_input,
+            skip_rows=config.skip_rows,
+            skip_cols=config.skip_cols,
+            max_row=config.max_row,
+        )
+        csv_data = read_csv(csv_cfg)
+        sheet = SheetData(
+            headers=csv_data.headers,
+            rows=csv_data.rows,
+            source_path=csv_data.source_path,
+        )
+        return sheet, config, None
+
+    if suffix in (".sql", ".txt"):
+        logger.info("Detected SQL format: %s", path.name)
+        sql_cfg = SqlReadConfig(
+            path=path,
+            encoding=config.encoding_input,
+        )
+        sql_data = read_sql(sql_cfg)
+        sheet = SheetData(
+            headers=sql_data.headers,
+            rows=sql_data.rows,
+            source_path=sql_data.source_path,
+        )
+        effective = config
+        if config.table_name == "table_name" and sql_data.table_name:
+            effective = dataclasses.replace(config, table_name=sql_data.table_name)
+        return sheet, effective, None
+
+    raise ConfigurationError(
+        f"Unsupported file format: '{suffix}'. "
+        f"Supported: .xlsx, .xls, .xlsm, .csv, .tsv, .sql, .txt"
+    )
 
     raise ConfigurationError(
         f"Unsupported input format: '{suffix}'. "
