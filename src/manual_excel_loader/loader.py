@@ -1,3 +1,16 @@
+"""
+loader.py
+=========
+
+Главная точка входа пакета. Собирает pipeline:
+
+    read_file() → (validate) → writer.write()
+
+Loader не знает о деталях форматов — этим занимаются ридеры.
+Loader не знает о деталях записи — этим занимаются врайтеры.
+Его зона ответственности: конфигурация, валидация строк, склейка.
+"""
+
 from __future__ import annotations
 
 import dataclasses
@@ -5,12 +18,16 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .readers.csv_reader import CsvReadConfig, read_csv
-from .readers.sql_reader import SqlReadConfig, read_sql
 from .enums import DatabaseType, DumpType, ErrorMode
 from .exceptions import ConfigurationError, DataValidationError
-from .models import LoaderConfig, LoadResult, CellValidationError, FileValidationResult
-from .reader import ExcelReadConfig, SheetData, read_excel
+from .models import (
+    CellValidationError,
+    FileValidationResult,
+    LoaderConfig,
+    LoadResult,
+)
+from .readers import SheetData, read_file
+from .readers.excel_reader import ExcelReadConfig, read_excel
 from .template import TemplateConfig, is_template, read_template_config
 from .writers.base import FileWriterConfig
 from .writers.csv_file import CsvFileWriter
@@ -81,20 +98,23 @@ def _resolve_output_path(config: LoaderConfig) -> Path:
     ).with_suffix(suffix)
 
 
-# ── Reader resolution ───────────────────────────────────────────────────────
+# ── Reader resolution ─────────────────────────────────────────────────────────
+
+_EXCEL_SUFFIXES = frozenset({".xlsx", ".xls", ".xlsm"})
+
 
 def _resolve_reader(
     config: LoaderConfig,
 ) -> tuple[SheetData, LoaderConfig, TemplateConfig | None]:
-    """Определить формат входящего файла → вернуть (sheet_data, effective_config, template_config).
+    """Определить формат → вернуть (sheet_data, effective_config, template_config).
 
-    Для обычного Excel: template_config = None, конфиг не меняется.
+    Для обычного Excel и текстовых форматов: template_config = None.
     Для шаблонного Excel: конфиг копируется с параметрами из TemplateConfig.
     """
     path = config.input_file
     suffix = path.suffix.lower()
 
-    if suffix in (".xlsx", ".xls", ".xlsm"):
+    if suffix in _EXCEL_SUFFIXES:
         if is_template(path):
             logger.info("Detected ODS template format: %s", path.name)
             tmpl = read_template_config(path)
@@ -103,7 +123,7 @@ def _resolve_reader(
                 skip_rows=tmpl.skip_rows,
                 dtypes=tmpl.dtypes if config.dtypes is None else config.dtypes,
             )
-            read_cfg = ExcelReadConfig(
+            cfg = ExcelReadConfig(
                 path=path,
                 sheet_name="data",
                 skip_rows=tmpl.skip_rows,
@@ -111,59 +131,42 @@ def _resolve_reader(
                 max_row=config.max_row,
                 skip_header_validation=True,
             )
-            sheet = read_excel(read_cfg)
+            sheet = read_excel(cfg)
             return sheet, effective, tmpl
         else:
             logger.info("Detected regular Excel format: %s", path.name)
-            read_cfg = ExcelReadConfig(
-                path=path,
+            sheet = read_file(
+                path,
                 sheet_name=config.sheet_name,
                 skip_rows=config.skip_rows,
                 skip_cols=config.skip_cols,
                 max_row=config.max_row,
             )
-            sheet = read_excel(read_cfg)
             return sheet, config, None
 
-    if suffix in (".csv", ".tsv"):
-        logger.info("Detected CSV format: %s", path.name)
-        csv_cfg = CsvReadConfig(
-            path=path,
-            delimiter="\t" if suffix == ".tsv" else config.delimiter,
-            encoding=config.encoding_input,
-            skip_rows=config.skip_rows,
-            skip_cols=config.skip_cols,
-            max_row=config.max_row,
-        )
-        csv_data = read_csv(csv_cfg)
-        sheet = SheetData(
-            headers=csv_data.headers,
-            rows=iter(csv_data.rows),
-            source_path=csv_data.source_path,
-        )
-        return sheet, config, None
-
-    if suffix in (".sql", ".txt"):
-        logger.info("Detected SQL format: %s", path.name)
-        sql_cfg = SqlReadConfig(
-            path=path,
-            encoding=config.encoding_input,
-        )
-        sql_data = read_sql(sql_cfg)
-        sheet = SheetData(
-            headers=sql_data.headers,
-            rows=iter(sql_data.rows),
-            source_path=sql_data.source_path,
-        )
-        effective = config
-        if config.table_name == "table_name" and sql_data.table_name:
-            effective = dataclasses.replace(config, table_name=sql_data.table_name)
-        return sheet, effective, None
-
-    raise ConfigurationError(
-        f"Unsupported file format: '{suffix}'. "
-        f"Supported: .xlsx, .xls, .xlsm, .csv, .tsv, .sql, .txt"
+    # CSV / TSV / SQL / TXT — делегируем read_file()
+    logger.info("Detected %s format: %s", suffix.lstrip(".").upper(), path.name)
+    sheet = read_file(
+        path,
+        encoding=config.encoding_input,
+        delimiter=config.delimiter,
+        skip_rows=config.skip_rows,
+        skip_cols=config.skip_cols,
+        max_row=config.max_row,
     )
+
+    # Для SQL: если имя таблицы дефолтное — пробуем взять из файла
+    effective = config
+    if suffix in (".sql", ".txt") and config.table_name == "table_name":
+        from .readers.sql_reader import SqlReadConfig, read_sql
+        try:
+            sql_data = read_sql(SqlReadConfig(path=path, encoding=config.encoding_input))
+            if sql_data.table_name:
+                effective = dataclasses.replace(config, table_name=sql_data.table_name)
+        except Exception:
+            pass
+
+    return sheet, effective, None
 
 
 # ── Row-level helpers ───────────────────────────────────────────────────────

@@ -1,3 +1,15 @@
+"""
+readers/excel_reader.py
+=======================
+
+Читает Excel-файлы (.xlsx / .xls / .xlsm) через openpyxl.
+Возвращает SheetData — унифицированный формат для loader.
+
+Этот модуль — единственное место в пакете где импортируется openpyxl.
+Благодаря этому тесты для валидатора, врайтеров и DDL-парсера
+не требуют openpyxl в окружении.
+"""
+
 from __future__ import annotations
 
 import re
@@ -8,22 +20,23 @@ from typing import Iterator
 
 import openpyxl
 
-from .exceptions import FileReadError, HeaderValidationError
+from ..exceptions import FileReadError, HeaderValidationError
 
 
 @dataclass(frozen=True)
 class ExcelReadConfig:
-    """
-    Parameters for a single Excel read operation.
+    """Параметры одного чтения Excel-файла.
 
-    Frozen so that config cannot be accidentally mutated mid-read,
-    which would make generator behaviour unpredictable.
+    Frozen: конфиг не может быть случайно изменён в процессе чтения,
+    что сделало бы поведение генератора непредсказуемым.
 
-    skip_header_validation: when True, header cells are lowercased/stripped
-        but NOT validated against the Latin-only regex. Used for template
-        files where the header row contains Russian display names — the
-        actual column names come from TemplateConfig, not from the sheet.
+    skip_header_validation: когда True, заголовки приводятся к нижнему
+        регистру и обрезаются, но НЕ проверяются на допустимые символы.
+        Используется для шаблонных файлов, где заголовочная строка
+        содержит русские отображаемые имена — технические EN-имена
+        берутся из TemplateConfig, а не из листа.
     """
+
     path: Path
     sheet_name: str | None = None
     skip_rows: int = 0
@@ -34,29 +47,27 @@ class ExcelReadConfig:
 
 @dataclass
 class SheetData:
-    """
-    Result of read_excel(): validated headers + lazy row iterator.
+    """Результат read_excel(): заголовки + ленивый итератор строк.
 
-    rows is a generator — the workbook stays open until the generator
-    is exhausted or garbage-collected. Do not close the file externally.
+    rows — генератор: книга остаётся открытой до его исчерпания
+    или сборки мусора. Не закрывай файл извне.
     """
+
     headers: list[str]
     rows: Iterator[tuple]
+    source_path: Path = field(default_factory=lambda: Path())
 
 
-# ── Internal helpers ───────────────────────────────────────────────────────────
+# ── Внутренние помощники ──────────────────────────────────────────────────────
 
 _VALID_HEADER = re.compile(r"^[a-z0-9_]+$")
 
 
 def _read_headers_raw(raw: list) -> list[str]:
-    """
-    Normalise a raw header row without validating character set.
+    """Нормализовать заголовок без проверки символов.
 
-    Used for template files where headers are Russian display names.
-    These names are never used as output column names — TemplateConfig
-    provides the technical EN names — but we still need to read the row
-    to correctly count data rows.
+    Используется для шаблонных файлов: заголовки там русские,
+    проверять их на латиницу не нужно.
     """
     last_non_none = max(
         (i for i, v in enumerate(raw) if v is not None),
@@ -68,12 +79,11 @@ def _read_headers_raw(raw: list) -> list[str]:
 
 
 def _validate_headers(raw: list) -> list[str]:
-    """
-    Validate and normalise a raw header row from openpyxl.
+    """Валидировать и нормализовать заголовочную строку.
 
     Raises:
-        HeaderValidationError: if headers are empty, contain invalid
-            characters, or contain duplicates.
+        HeaderValidationError: пустые заголовки, недопустимые символы,
+            дубликаты.
     """
     last_non_none = max(
         (i for i, v in enumerate(raw) if v is not None),
@@ -101,27 +111,23 @@ def _validate_headers(raw: list) -> list[str]:
     return headers
 
 
-# ── Public interface ───────────────────────────────────────────────────────────
+# ── Публичный интерфейс ───────────────────────────────────────────────────────
 
 def read_excel(config: ExcelReadConfig) -> SheetData:
-    """
-    Open an Excel file, validate its header row, and return a SheetData
-    with a lazy iterator over data rows.
+    """Открыть Excel-файл, проверить заголовок и вернуть SheetData.
 
-    The workbook is held open for the lifetime of the returned generator.
-    It is closed automatically when:
-    - the generator is fully exhausted, or
-    - the generator is garbage-collected / explicitly closed.
+    Книга остаётся открытой на время жизни возвращаемого генератора.
+    Закрывается автоматически когда генератор исчерпан или собран GC.
 
     Args:
-        config: read parameters (path, sheet, offsets, row limit).
+        config: параметры чтения (путь, лист, отступы, лимит строк).
 
     Returns:
-        SheetData with headers and a lazy row iterator.
+        SheetData с заголовками и ленивым итератором строк.
 
     Raises:
-        FileReadError: if the file does not exist or cannot be opened.
-        HeaderValidationError: if the header row is invalid (when validation enabled).
+        FileReadError: файл не найден или не читается.
+        HeaderValidationError: заголовок некорректен (если валидация включена).
     """
     warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
@@ -135,8 +141,8 @@ def read_excel(config: ExcelReadConfig) -> SheetData:
     try:
         sheet = wb[config.sheet_name] if config.sheet_name else wb.active
     except KeyError:
-        wb.close()
         available = wb.sheetnames
+        wb.close()
         raise FileReadError(
             f"sheet '{config.sheet_name}' not found. "
             f"Available sheets: {available}"
@@ -181,4 +187,8 @@ def read_excel(config: ExcelReadConfig) -> SheetData:
         finally:
             wb.close()
 
-    return SheetData(headers=headers, rows=_iter_rows())
+    return SheetData(
+        headers=headers,
+        rows=_iter_rows(),
+        source_path=config.path,
+    )
