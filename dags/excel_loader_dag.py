@@ -100,12 +100,13 @@ DAG_PARAMS = {
     # ── Валидация ─────────────────────────────────────────────────────────────
     "validation": Param(
         default="bd",
-        type=["string", "null"],
+        type="string",
+        enum=["bd", "ods_template", "user_string", "none"],
         description=(
             "bd           — типы из БД (целевая таблица); инференс если таблицы нет;\n"
             "ods_template — типы из klad_config (GP + Excel-шаблон); иначе инференс;\n"
             "user_string  — типы из DDL-строки в поле ddl_string;\n"
-            "оставьте пустым — без валидации."
+            "none         — без валидации."
         ),
     ),
     "ddl_string": Param(
@@ -141,7 +142,7 @@ DAG_PARAMS = {
     ),
     # ── Прочее ───────────────────────────────────────────────────────────────
     "batch_size":   Param(default=500, type="integer"),
-    "timestamp":    Param(default=None, type=["string", "null"], description="write_ts | load_dttm | оставьте пустым"),
+    "timestamp":    Param(default="none", type="string", enum=["none", "write_ts", "load_dttm"]),
     "wf_load_idn":  Param(default=None, type=["string", "null"]),
     "is_strip":     Param(default=False, type="boolean", description="Обрезать пробелы у строковых значений"),
     "notify_email": Param(
@@ -181,7 +182,7 @@ def _validate_params_fn(**context: Any) -> dict[str, Any]:
             "Параметр 'ddl_string' обязателен при validation='user_string'."
         )
 
-    if export in _DB_EXPORT_MODES and not validation:
+    if export in _DB_EXPORT_MODES and validation == "none":
         log.warning(
             "validation не задана + export='%s': данные загрузятся без проверки типов.",
             export,
@@ -277,10 +278,10 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
         dtypes = parse_ddl(ddl_string, db_type)
         log.info("user_string: распарсено %d колонок из DDL", len(dtypes))
 
-    # ── пусто / не задано — без валидации ────────────────────────────────────
+    # ── none — без валидации ──────────────────────────────────────────────────
     else:
         dtypes = None
-        log.info("validation не задана: валидация пропущена")
+        log.info("validation=none: валидация пропущена")
 
     # ── Генерируем create_ddl если нужна загрузка в БД и таблицы нет ─────────
     if export in _DB_EXPORT_MODES and dtypes is not None:
@@ -288,7 +289,7 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
             from manual_excel_loader.ddl_generator import generate_ddl
             from manual_excel_loader.enums import TimestampField
             ts = params.get("timestamp")
-            ts_field = TimestampField(ts) if ts else None
+            ts_field = TimestampField(ts) if ts and ts != "none" else None
             create_ddl = generate_ddl(dtypes, scheme, table, db_type, ts_field)
             log.info("DDL сгенерирован для %s.%s", scheme, table)
 
@@ -357,7 +358,7 @@ def _load_file_fn(
         max_row=params.get("max_row"),
         wf_load_idn=params.get("wf_load_idn"),
         timestamp=(
-            TimestampField(params["timestamp"]) if params.get("timestamp") else None
+            TimestampField(params["timestamp"]) if params.get("timestamp") != "none" else None
         ),
         dtypes=dtype_info.get("dtypes"),
     )
@@ -418,7 +419,7 @@ def _load_db_fn(
 
     # ── Конфиг загрузчика ─────────────────────────────────────────────────────
     validation = params.get("validation", "bd")
-    error_mode_str = "ignore" if not validation else params.get("error_mode", "raise")
+    error_mode_str = "ignore" if validation == "none" else params.get("error_mode", "raise")
 
     cfg = LoaderConfig(
         input_file=Path(params["input_file"]),
@@ -437,7 +438,7 @@ def _load_db_fn(
         max_row=params.get("max_row"),
         wf_load_idn=params.get("wf_load_idn"),
         timestamp=(
-            TimestampField(params["timestamp"]) if params.get("timestamp") else None
+            TimestampField(params["timestamp"]) if params.get("timestamp") != "none" else None
         ),
         dtypes=dtypes,
     )
