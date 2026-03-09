@@ -48,8 +48,8 @@ BASE_PARAMS = {
     "delimiter":        ",",
     "encoding_input":   "utf-8",
     "encoding_output":  "utf-8",
-    "is_strip":         False,
-    "notify_email":     "",
+    "is_strip":              False,
+    "validation_report_dir": "",
 }
 
 _NO_DTYPE_INFO: dict = {"dtypes": None, "create_ddl": None, "table_exists": False}
@@ -184,42 +184,6 @@ class TestLoadFile:
         with patch("manual_excel_loader.load", side_effect=FileReadError("oops")):
             with pytest.raises(FileReadError):
                 _load_file_fn(params, _NO_DTYPE_INFO, **_make_context())
-
-    def test_notify_email_called_on_error(self, tmp_path):
-        from dags.excel_loader_dag import _load_file_fn
-        from manual_excel_loader.exceptions import DataValidationError
-        from manual_excel_loader.models import FileValidationResult
-
-        f = tmp_path / "data.xlsx"
-        f.write_bytes(b"PK")
-        params = {**BASE_PARAMS, "input_file": str(f), "db_type": "greenplum",
-                  "notify_email": "ops@example.com"}
-
-        with patch(
-            "manual_excel_loader.load",
-            side_effect=DataValidationError("bad", validation_result=FileValidationResult()),
-        ), patch("dags.excel_loader_dag.send_email") as mock_email:
-            with pytest.raises(DataValidationError):
-                _load_file_fn(params, _NO_DTYPE_INFO, **_make_context())
-        mock_email.assert_called_once()
-        assert "ops@example.com" in str(mock_email.call_args)
-
-    def test_no_email_when_notify_empty(self, tmp_path):
-        from dags.excel_loader_dag import _load_file_fn
-        from manual_excel_loader.exceptions import DataValidationError
-        from manual_excel_loader.models import FileValidationResult
-
-        f = tmp_path / "data.xlsx"
-        f.write_bytes(b"PK")
-        params = {**BASE_PARAMS, "input_file": str(f), "db_type": "greenplum", "notify_email": ""}
-
-        with patch(
-            "manual_excel_loader.load",
-            side_effect=DataValidationError("bad", validation_result=FileValidationResult()),
-        ), patch("dags.excel_loader_dag.send_email") as mock_email:
-            with pytest.raises(DataValidationError):
-                _load_file_fn(params, _NO_DTYPE_INFO, **_make_context())
-        mock_email.assert_not_called()
 
     def test_xcom_result_is_json_serializable(self, tmp_path):
         from dags.excel_loader_dag import _load_file_fn
