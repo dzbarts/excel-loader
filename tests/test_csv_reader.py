@@ -67,7 +67,8 @@ class TestReadCsv:
         assert result.rows[0] == ("1", "2")
 
     def test_file_not_found(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
+        from manual_excel_loader.exceptions import FileReadError
+        with pytest.raises(FileReadError):
             read_csv(CsvReadConfig(path=tmp_path / "missing.csv"))
 
     def test_empty_file_raises(self, tmp_path):

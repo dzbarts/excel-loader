@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, date, time
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 from dateutil import parser as dateutil_parser
 
@@ -36,19 +37,31 @@ def validate_float(value: Any, min_val: float, max_val: float) -> CellResult[flo
 
 
 def validate_decimal(value: Any, precision: int = 32, scale: int = 8) -> CellResult[float]:
-    if "," in str(value):
+    """Валидация DECIMAL(precision, scale).
+
+    precision — всего значащих цифр; scale — из них после запятой.
+    Использует decimal.Decimal для корректной обработки научной нотации и NaN/Inf.
+    """
+    if isinstance(value, str) and "," in value:
         return Err("use a dot instead of a comma as decimal separator")
     try:
-        v = float(value)
-    except (ValueError, TypeError):
+        d = Decimal(str(value))
+    except InvalidOperation:
         return Err("not a number")
-    s = str(v)
-    int_part, _, dec_part = s.partition(".")
-    int_part = int_part.lstrip("-")
-    total = len(int_part) + len(dec_part)
-    if total > precision:
-        return Err(f"total digits {total} exceed precision {precision}")
-    return Ok(round(v, scale))
+    sign, digits, exponent = d.as_tuple()
+    if not isinstance(exponent, int):
+        # Infinity или NaN
+        return Err("not a finite number")
+    frac_digits = max(0, -exponent)
+    int_digits = max(0, len(digits) + exponent)
+    if frac_digits > scale:
+        return Err(f"fractional digits ({frac_digits}) exceed scale ({scale})")
+    if int_digits > precision - scale:
+        return Err(
+            f"integer digits ({int_digits}) exceed {precision - scale} "
+            f"(precision={precision}, scale={scale})"
+        )
+    return Ok(round(float(d), scale))
 
 
 def validate_string(value: Any) -> CellResult[str]:

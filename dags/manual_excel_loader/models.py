@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from .enums import DatabaseType, ErrorMode, DumpType, TimestampField
 
@@ -34,7 +34,7 @@ class LoaderConfig:
 
     input_file: Path
     db_type: DatabaseType
-    sheet_name: Optional[str] = None
+    sheet_name: str | None = None
     skip_rows: int = 0
     skip_cols: int = 0
     table_name: str = "table_name"
@@ -50,9 +50,9 @@ class LoaderConfig:
 
     batch_size: int = 500
     delimiter: str = ","
-    timestamp: Optional[TimestampField] = None
-    max_row: Optional[int] = None
-    wf_load_idn: Optional[str] = None
+    timestamp: TimestampField | None = None
+    max_row: int | None = None
+    wf_load_idn: str | None = None
     is_strip: bool = False
     set_empty_str_to_null: bool = True
 
@@ -60,7 +60,7 @@ class LoaderConfig:
     # с порядком в Excel. Получить через parse_ddl() или передать вручную:
     # {"id": "integer", "name": "text"}.
     # Столбцы из Excel, отсутствующие в dtypes, проходят без валидации.
-    dtypes: Optional[dict[str, str]] = None
+    dtypes: dict[str, str] | None = None
 
     # Показывать tqdm прогресс-бар (только для ручного запуска).
     # При запуске через Airflow оставьте False.
@@ -69,7 +69,7 @@ class LoaderConfig:
     # Директория для TXT-отчёта валидации.
     # None (по умолчанию) — файл не создаётся, ошибки только в логах.
     # Передайте Path, чтобы записать отчёт; удобный дефолт: input_file.parent.
-    validation_report_dir: Optional[Path] = None
+    validation_report_dir: Path | None = None
     # Включить примеры значений в TXT-отчёт (может содержать чувствительные данные).
     validation_report_include_values: bool = False
 
@@ -110,7 +110,7 @@ class CellValidationError:
     """Одна ошибка валидации в конкретной ячейке."""
 
     cell_name: str   # например "B5"
-    cell_value: object
+    cell_value: Any
     expected_type: str
     message: str
     col_name: str = ""  # имя колонки из заголовка (например "sale_date")
@@ -143,12 +143,12 @@ class LoadResult:
 
     rows_written: int
     rows_skipped: int = 0
-    output_file: Optional[Path] = None
-    error_file: Optional[Path] = None
+    output_file: Path | None = None
+    error_file: Path | None = None
     has_errors: bool = False
-    validation_result: Optional[FileValidationResult] = None
+    validation_result: FileValidationResult | None = None
 
     # Алиас для обратной совместимости с кодом, который использовал output_path.
     @property
-    def output_path(self) -> Optional[Path]:
+    def output_path(self) -> Path | None:
         return self.output_file

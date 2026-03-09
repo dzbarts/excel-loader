@@ -128,8 +128,13 @@ class TestValidateDecimal:
         result = validate_decimal("123456789.12", precision=5, scale=2)
         assert isinstance(result, Err)
 
-    def test_scale_rounds_value(self):
+    def test_fractional_exceeds_scale_returns_err(self):
+        # 3.14159265 имеет 8 знаков после запятой — не влезает в scale=2 без потери данных
         result = validate_decimal("3.14159265", precision=32, scale=2)
+        assert isinstance(result, Err)
+
+    def test_value_within_scale_ok(self):
+        result = validate_decimal("3.14", precision=32, scale=2)
         assert result == Ok(3.14)
 
     def test_non_numeric_returns_err(self):
@@ -141,6 +146,25 @@ class TestValidateDecimal:
     def test_negative_value_accepted(self):
         result = validate_decimal("-99.99", precision=10, scale=2)
         assert isinstance(result, Ok)
+
+    def test_scientific_notation_large_int_returns_err(self):
+        # 1e10 = 10_000_000_000 — 11 целых цифр, не влезает в decimal(5, 2)
+        result = validate_decimal("1e10", precision=5, scale=2)
+        assert isinstance(result, Err)
+
+    def test_scientific_notation_within_precision_ok(self):
+        # 1e2 = 100 — 3 целых цифры, влезает в decimal(10, 2)
+        result = validate_decimal("1e2", precision=10, scale=2)
+        assert isinstance(result, Ok)
+
+    def test_infinity_returns_err(self):
+        assert isinstance(validate_decimal("inf", 32, 8), Err)
+
+    def test_nan_returns_err(self):
+        assert isinstance(validate_decimal("nan", 32, 8), Err)
+
+    def test_negative_inf_returns_err(self):
+        assert isinstance(validate_decimal("-inf", 32, 8), Err)
 
 
 # ── validate_string ───────────────────────────────────────────────────────────

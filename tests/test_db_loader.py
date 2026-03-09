@@ -86,12 +86,15 @@ class TestGPOwnConnection:
         with patch("manual_excel_loader._connections.get_gp_conn", return_value=conn), \
              patch("psycopg2.extras.execute_values", mock_ev):
             load_to_db(HEADERS, _rows(1), SCHEME, TABLE, GP, batch_size=BATCH_SIZE)
+        from psycopg2 import sql as pgsql
         sql_used = mock_ev.call_args_list[0].args[1]
-        assert f'"{SCHEME}"' in sql_used
-        assert f'"{TABLE}"' in sql_used
+        assert isinstance(sql_used, pgsql.Composed)
+        sql_str = str(sql_used)
+        assert SCHEME in sql_str
+        assert TABLE in sql_str
         for h in HEADERS:
-            assert f'"{h}"' in sql_used
-        assert "VALUES %s" in sql_used
+            assert h in sql_str
+        assert "VALUES %s" in sql_str
 
     def test_rows_batched_correctly(self):
         """5 rows with batch_size=2 → 3 execute_values calls (2+2+1)."""

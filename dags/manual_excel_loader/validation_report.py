@@ -164,7 +164,7 @@ def write_report(
 ) -> Path:
     """Записывает TXT-отчёт в report_dir и возвращает путь к файлу."""
     report_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{input_file.stem}_validation_{ts}.txt"
     path = report_dir / filename
     text = _format_report(result, input_file, include_sample_values=include_sample_values)

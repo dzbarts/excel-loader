@@ -248,3 +248,68 @@ class TestValidationReport:
 
         assert result.error_file is None
         assert not report_dir.exists() or list(report_dir.glob("*.txt")) == []
+
+
+# ── _resolve_output_path ──────────────────────────────────────────────────────
+
+class TestResolveOutputPath:
+    """Unit tests for _resolve_output_path helper."""
+
+    def _make_config(self, tmp_path: Path, dump_type=None) -> "LoaderConfig":
+        from manual_excel_loader.models import LoaderConfig
+        from manual_excel_loader.enums import DatabaseType, DumpType
+
+        wb = openpyxl.Workbook()
+        wb.active.append(["col"])
+        wb.active.append([1])
+        excel = tmp_path / "my_data.xlsx"
+        wb.save(excel)
+
+        kwargs = dict(
+            input_file=excel,
+            db_type=DatabaseType.GREENPLUM,
+        )
+        if dump_type is not None:
+            kwargs["dump_type"] = dump_type
+        return LoaderConfig(**kwargs)
+
+    def test_output_in_same_directory_as_input(self, tmp_path: Path):
+        from manual_excel_loader.loader import _resolve_output_path
+
+        config = self._make_config(tmp_path)
+        result = _resolve_output_path(config)
+        assert result.parent == tmp_path
+
+    def test_output_stem_contains_input_stem(self, tmp_path: Path):
+        from manual_excel_loader.loader import _resolve_output_path
+
+        config = self._make_config(tmp_path)
+        result = _resolve_output_path(config)
+        assert "my_data" in result.stem
+
+    def test_sql_dump_type_gives_sql_extension(self, tmp_path: Path):
+        from manual_excel_loader.loader import _resolve_output_path
+        from manual_excel_loader.enums import DumpType
+
+        config = self._make_config(tmp_path, dump_type=DumpType.SQL)
+        result = _resolve_output_path(config)
+        assert result.suffix == ".sql"
+
+    def test_csv_dump_type_gives_csv_extension(self, tmp_path: Path):
+        from manual_excel_loader.loader import _resolve_output_path
+        from manual_excel_loader.enums import DumpType
+
+        config = self._make_config(tmp_path, dump_type=DumpType.CSV)
+        result = _resolve_output_path(config)
+        assert result.suffix == ".csv"
+
+    def test_two_calls_produce_different_paths(self, tmp_path: Path):
+        """Timestamp ensures unique output paths across calls."""
+        import time
+        from manual_excel_loader.loader import _resolve_output_path
+
+        config = self._make_config(tmp_path)
+        path1 = _resolve_output_path(config)
+        time.sleep(1.1)  # ensure timestamp changes (resolution = seconds)
+        path2 = _resolve_output_path(config)
+        assert path1 != path2

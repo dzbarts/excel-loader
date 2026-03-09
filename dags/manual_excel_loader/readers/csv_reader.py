@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Iterator
 
+from ..exceptions import FileReadError
+
 log = logging.getLogger(__name__)
 
 
@@ -44,7 +46,7 @@ def read_csv(config: CsvReadConfig) -> CsvSheetData:
     """
     path = config.path
     if not path.exists():
-        raise FileNotFoundError(f"CSV-файл не найден: {path}")
+        raise FileReadError(f"CSV-файл не найден: {path}")
 
     log.info("Читаем CSV: %s (разделитель=%r, кодировка=%s)", path, config.delimiter, config.encoding)
 

@@ -48,6 +48,7 @@ def _load_gp(
     batch_size: int,
     conn,
 ) -> int:
+    from psycopg2 import sql as pgsql
     from psycopg2.extras import execute_values
 
     own_conn = conn is None
@@ -56,8 +57,11 @@ def _load_gp(
         conn = get_gp_conn()
         conn.autocommit = False
 
-    cols = ", ".join(f'"{h}"' for h in headers)
-    sql = f'INSERT INTO "{scheme}"."{table}" ({cols}) VALUES %s'
+    sql = pgsql.SQL("INSERT INTO {scheme}.{table} ({cols}) VALUES %s").format(
+        scheme=pgsql.Identifier(scheme),
+        table=pgsql.Identifier(table),
+        cols=pgsql.SQL(", ").join(pgsql.Identifier(h) for h in headers),
+    )
 
     total = 0
     batch: list[tuple] = []
