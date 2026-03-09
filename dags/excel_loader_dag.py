@@ -141,7 +141,7 @@ DAG_PARAMS = {
     ),
     # ── Прочее ───────────────────────────────────────────────────────────────
     "batch_size":   Param(default=500, type="integer"),
-    "timestamp":    Param(default=None, type=["string", "null"], enum=[None, "write_ts", "load_dttm"]),
+    "timestamp":    Param(default="", type=["string", "null"], enum=["", "write_ts", "load_dttm"]),
     "wf_load_idn":  Param(default=None, type=["string", "null"]),
     "is_strip":     Param(default=False, type="boolean"),
     "notify_email": Param(
