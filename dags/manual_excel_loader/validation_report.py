@@ -152,7 +152,6 @@ def _format_report(
             lines.append(f"  Sample values: {sample_str}")
         lines.append("")
 
-    lines.append(f"Fix hint: open {input_file.name} and correct the cell ranges listed above.")
     return "\n".join(lines)
 
 

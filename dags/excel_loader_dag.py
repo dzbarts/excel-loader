@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,8 +55,7 @@ _DB_EXPORT_MODES   = frozenset({"append", "truncate_load", "via_backup"})
 
 default_args = {
     "owner": "data-engineering",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
+    "retries": 0,
     "email_on_failure": False,
 }
 

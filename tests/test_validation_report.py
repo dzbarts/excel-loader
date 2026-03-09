@@ -153,10 +153,9 @@ class TestFormatReport:
         assert "Sample values" in text
         assert "B5" in text
 
-    def test_fix_hint_present(self):
+    def test_input_filename_in_report(self):
         r = _result(_err("B5", "integer", "amount"))
         text = _format_report(r, INPUT_FILE, include_sample_values=False)
-        assert "Fix hint" in text
         assert INPUT_FILE.name in text
 
     def test_multiple_columns_all_present(self):
