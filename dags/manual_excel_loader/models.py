@@ -66,6 +66,13 @@ class LoaderConfig:
     # При запуске через Airflow оставьте False.
     show_progress: bool = False
 
+    # Директория для TXT-отчёта валидации.
+    # None (по умолчанию) — файл не создаётся, ошибки только в логах.
+    # Передайте Path, чтобы записать отчёт; удобный дефолт: input_file.parent.
+    validation_report_dir: Optional[Path] = None
+    # Включить примеры значений в TXT-отчёт (может содержать чувствительные данные).
+    validation_report_include_values: bool = False
+
     def __post_init__(self) -> None:
         """Базовая валидация конфига при создании объекта.
 
@@ -106,6 +113,7 @@ class CellValidationError:
     cell_value: object
     expected_type: str
     message: str
+    col_name: str = ""  # имя колонки из заголовка (например "sale_date")
 
 
 @dataclass

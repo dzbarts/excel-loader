@@ -127,3 +127,124 @@ class TestOutputFileCleanupOnError:
             if f.suffix in (".sql", ".csv") and f.stem != "input"
         ]
         assert output_files == [], f"Не должно быть output-файлов: {output_files}"
+
+
+class TestValidationReport:
+    """Тесты интеграции load() с validation_report: файл отчёта и error_file."""
+
+    def _make_excel_with_bad_data(self, tmp_path: Path) -> Path:
+        """Excel с заголовком 'amount' и строками, где значение — строка вместо integer."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["amount"])
+        ws.append(["not_a_number"])
+        ws.append(["also_bad"])
+        path = tmp_path / "data.xlsx"
+        wb.save(path)
+        return path
+
+    def _make_config_with_validation(
+        self,
+        input_file: Path,
+        report_dir: Path | None = None,
+        include_values: bool = False,
+        error_mode: "ErrorMode" = None,
+    ) -> "LoaderConfig":
+        from manual_excel_loader.enums import DatabaseType, DumpType, ErrorMode
+        return LoaderConfig(
+            input_file=input_file,
+            db_type=DatabaseType.GREENPLUM,
+            table_name="t",
+            scheme_name="s",
+            dump_type=DumpType.SQL,
+            error_mode=error_mode or ErrorMode.COERCE,
+            dtypes={"amount": "integer"},
+            validation_report_dir=report_dir,
+            validation_report_include_values=include_values,
+        )
+
+    def test_no_report_file_when_dir_none(self, tmp_path: Path):
+        """validation_report_dir=None → error_file is None, файл не создаётся."""
+        from manual_excel_loader import load
+
+        excel = self._make_excel_with_bad_data(tmp_path)
+        config = self._make_config_with_validation(excel, report_dir=None)
+        result = load(config)
+
+        assert result.error_file is None
+        txt_files = list(tmp_path.glob("*_validation_*.txt"))
+        assert txt_files == []
+
+    def test_report_file_written_when_dir_set(self, tmp_path: Path):
+        """validation_report_dir задан → error_file указывает на созданный TXT."""
+        from manual_excel_loader import load
+
+        excel = self._make_excel_with_bad_data(tmp_path)
+        report_dir = tmp_path / "reports"
+        config = self._make_config_with_validation(excel, report_dir=report_dir)
+        result = load(config)
+
+        assert result.error_file is not None
+        assert result.error_file.exists()
+        assert result.error_file.suffix == ".txt"
+        assert "validation" in result.error_file.name
+
+    def test_report_dir_defaults_to_input_parent(self, tmp_path: Path):
+        """Если передать input_file.parent — файл ляжет рядом с входным файлом."""
+        from manual_excel_loader import load
+
+        excel = self._make_excel_with_bad_data(tmp_path)
+        config = self._make_config_with_validation(excel, report_dir=excel.parent)
+        result = load(config)
+
+        assert result.error_file is not None
+        assert result.error_file.parent == tmp_path
+
+    def test_col_name_in_report(self, tmp_path: Path):
+        """Имя колонки из заголовка присутствует в TXT-отчёте."""
+        from manual_excel_loader import load
+
+        excel = self._make_excel_with_bad_data(tmp_path)
+        report_dir = tmp_path / "reports"
+        config = self._make_config_with_validation(excel, report_dir=report_dir)
+        result = load(config)
+
+        content = result.error_file.read_text(encoding="utf-8")
+        assert "amount" in content
+
+    def test_verify_mode_writes_report_then_raises(self, tmp_path: Path):
+        """VERIFY + ошибки + report_dir → файл создаётся, затем DataValidationError."""
+        from manual_excel_loader import load
+        from manual_excel_loader.enums import ErrorMode
+        from manual_excel_loader.exceptions import DataValidationError
+
+        excel = self._make_excel_with_bad_data(tmp_path)
+        report_dir = tmp_path / "reports"
+        config = self._make_config_with_validation(
+            excel, report_dir=report_dir, error_mode=ErrorMode.VERIFY
+        )
+
+        with pytest.raises(DataValidationError):
+            load(config)
+
+        txt_files = list(report_dir.glob("*_validation_*.txt"))
+        assert len(txt_files) == 1, "Файл отчёта должен быть создан до исключения"
+
+    def test_no_report_on_valid_data(self, tmp_path: Path):
+        """Если данные валидны — файл отчёта не создаётся (нечего писать)."""
+        from manual_excel_loader import load
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["amount"])
+        ws.append([42])
+        ws.append([7])
+        excel = tmp_path / "good.xlsx"
+        wb.save(excel)
+
+        report_dir = tmp_path / "reports"
+        config = self._make_config_with_validation(excel, report_dir=report_dir)
+        result = load(config)
+
+        assert result.error_file is None
+        assert not report_dir.exists() or list(report_dir.glob("*.txt")) == []

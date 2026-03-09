@@ -1,24 +1,18 @@
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.1
+  build: .
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW_FERNET_KEY}'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW_SECRET_KEY}'
-    # Устанавливает пакет из смонтированного src/ при старте каждого контейнера.
-    # Для продакшна замени на кастомный Dockerfile с pip install -e .
-    _PIP_ADDITIONAL_REQUIREMENTS: ''
-    PYTHONPATH: /opt/airflow/src
+    # Пакет импортируется напрямую из смонтированного dags/
+    PYTHONPATH: /opt/airflow/dags
   volumes:
     - ./dags:/opt/airflow/dags
-    - ./src:/opt/airflow/src
     - airflow_logs:/opt/airflow/logs
   networks:
     - de_network
-  depends_on:
-    postgres:
-      condition: service_healthy
 
 services:
 
@@ -58,16 +52,21 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
-    entrypoint: bash -c "
-      pip install -e /opt/airflow/src/.. --quiet --no-cache-dir &&
-      airflow db migrate &&
-      airflow users create
-        --username ${AIRFLOW_ADMIN_USERNAME}
-        --password ${AIRFLOW_ADMIN_PASSWORD}
-        --firstname Air --lastname Flow
-        --role Admin
-        --email admin@example.com
-      "
+    entrypoint:
+      - bash
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USERNAME}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname Air \
+          --lastname Flow \
+          --role Admin \
+          --email admin@example.com
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: no
 
   airflow-webserver:
@@ -75,15 +74,23 @@ services:
     container_name: airflow-webserver
     ports:
       - "8080:8080"
-    command: >
-      bash -c "pip install -e /opt/airflow/src/.. --quiet --no-cache-dir && airflow webserver"
+    command: airflow webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
-    command: >
-      bash -c "pip install -e /opt/airflow/src/.. --quiet --no-cache-dir && airflow scheduler"
+    command: airflow scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:

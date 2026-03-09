@@ -35,6 +35,7 @@ from .models import (
 from .readers import SheetData, read_file
 from .readers.excel_reader import ExcelReadConfig, read_excel
 from .template import TemplateConfig, is_template, read_template_config
+from .validation_report import log_validation_result, write_report
 from .writers.base import FileWriterConfig
 from .writers.csv_file import CsvFileWriter
 from .writers.sql_file import SqlFileWriter
@@ -185,6 +186,7 @@ def _validate_row(
                 cell_value=value,
                 expected_type=config.dtypes.get(col_name, "unknown"),
                 message="key column must not be NULL",
+                col_name=col_name,
             ))
             output.append(None)
             continue
@@ -206,6 +208,7 @@ def _validate_row(
                 cell_value=value,
                 expected_type=config.dtypes.get(col_name, "unknown"),
                 message=cell_result.message,
+                col_name=col_name,
             ))
     return tuple(output)
 
@@ -482,21 +485,26 @@ def load(config: LoaderConfig) -> LoadResult:
         for _ in _processed_rows():
             rows_written += 1
         has_errors = not validation_result.is_valid
+        log_validation_result(validation_result, config.input_file, logger)
+        error_file: Path | None = None
+        if has_errors and effective_config.validation_report_dir is not None:
+            error_file = write_report(
+                validation_result,
+                config.input_file,
+                effective_config.validation_report_dir,
+                include_sample_values=effective_config.validation_report_include_values,
+            )
+            logger.info("Validation report saved: %s", error_file)
         if has_errors:
             raise DataValidationError(
                 f"Validation failed: {len(validation_result.errors)} error(s).",
                 validation_result,
             )
-        logger.info(
-            "VERIFY passed: %d rows, no errors. File: %s",
-            rows_written,
-            config.input_file.name,
-        )
         return LoadResult(
             rows_written=rows_written,
             rows_skipped=rows_skipped,
             output_file=None,
-            error_file=None,
+            error_file=error_file,
             has_errors=False,
             validation_result=validation_result,
         )
@@ -538,6 +546,20 @@ def load(config: LoaderConfig) -> LoadResult:
         raise
 
     has_errors = not validation_result.is_valid
+
+    if needs_validation:
+        log_validation_result(validation_result, config.input_file, logger)
+
+    report_file: Path | None = None
+    if needs_validation and has_errors and effective_config.validation_report_dir is not None:
+        report_file = write_report(
+            validation_result,
+            config.input_file,
+            effective_config.validation_report_dir,
+            include_sample_values=effective_config.validation_report_include_values,
+        )
+        logger.info("Validation report saved: %s", report_file)
+
     if effective_config.error_mode == ErrorMode.RAISE and has_errors:
         raise DataValidationError(
             f"Validation failed: {len(validation_result.errors)} error(s).",
@@ -554,7 +576,7 @@ def load(config: LoaderConfig) -> LoadResult:
         rows_written=rows_written,
         rows_skipped=rows_skipped,
         output_file=output_path,
-        error_file=None,
+        error_file=report_file,
         has_errors=has_errors,
         validation_result=validation_result if needs_validation else None,
     )

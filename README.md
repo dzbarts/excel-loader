@@ -11,10 +11,12 @@
 - [Возможности](#возможности)
 - [Структура проекта](#структура-проекта)
 - [Архитектура](#архитектура)
+- [Быстрый старт — Docker](#быстрый-старт--docker)
 - [Быстрый старт — Python API](#быстрый-старт--python-api)
 - [Запуск через Airflow](#запуск-через-airflow)
 - [Параметры LoaderConfig](#параметры-loaderconfig)
 - [Режимы обработки ошибок](#режимы-обработки-ошибок)
+- [Отчёт валидации](#отчёт-валидации)
 - [DDL-парсер и типы данных](#ddl-парсер-и-типы-данных)
 - [Шаблоны ODS (data + klad_config)](#шаблоны-ods)
 - [Стратегии экспорта](#стратегии-экспорта)
@@ -34,6 +36,7 @@
 | Чтение CSV / TSV | ✅ |
 | Чтение SQL INSERT-файлов | ✅ |
 | Валидация типов данных (GP / CH) | ✅ |
+| Отчёт валидации — логи + опциональный TXT-файл | ✅ |
 | Поддержка шаблонов ODS (data + klad_config) | ✅ |
 | Генерация DDL по Excel | ✅ |
 | Выгрузка в SQL-файл | ✅ |
@@ -72,11 +75,13 @@ excel-loader/
 │       ├── models.py                  # LoaderConfig, LoadResult, CellValidationError
 │       ├── result.py                  # Result-тип: Ok / Err для валидаторов
 │       ├── template.py                # парсер шаблонов klad_config
+│       ├── validation_report.py       # форматирование и запись отчёта валидации
 │       ├── validator.py               # валидаторы типов GP и CH
 │       └── ddl.py                     # DDL-парсер CREATE TABLE → dict[col, type]
 ├── tests/
 │   ├── test_dag.py
 │   ├── test_loader.py
+│   ├── test_validation_report.py
 │   ├── test_validator.py
 │   ├── test_template.py
 │   ├── test_writers.py
@@ -90,6 +95,9 @@ excel-loader/
 │   ├── test_table_manager.py
 │   └── test_db_loader.py
 ├── conftest.py                        # добавляет dags/ в sys.path для тестов
+├── Dockerfile                         # образ Airflow с предустановленными зависимостями
+├── docker-compose.yml
+├── .env.example
 ├── pyproject.toml
 └── Makefile
 ```
@@ -105,9 +113,12 @@ read_file()          →       validate_row()        →       writer.write()
   ↓                              ↓                               ↓
 SheetData                  FileValidationResult          SQL / CSV файл (to_sql / to_csv)
 (headers + rows iter)      (CellValidationError list)
+                                ↓
+                        validation_report             →   DB
+                        (логи + TXT-файл)
                                                       →   table_manager.prepare()
                                                               ↓
-                                                          db_loader.load_to_db()   →   DB
+                                                          db_loader.load_to_db()
                                                               ↓
                                                           table_manager.finalize()
                                                           (append / truncate_load / via_backup)
@@ -122,11 +133,67 @@ SheetData                  FileValidationResult          SQL / CSV файл (to_
 
 ---
 
+## Быстрый старт — Docker
+
+Требования: **Docker** и **Docker Compose** (v2).
+
+```bash
+git clone <repo>
+cd excel-loader
+make setup
+```
+
+`make setup` выполняет всё автоматически:
+1. Создаёт `.env` из `.env.example`
+2. Генерирует `AIRFLOW_FERNET_KEY` и `AIRFLOW_SECRET_KEY` через Python stdlib
+3. Собирает Docker-образ (`docker compose up --build`)
+4. Ждёт завершения `airflow-init` (DB migrate + создание admin-пользователя)
+
+После окончания:
+
+| Сервис | Адрес |
+|---|---|
+| Airflow UI | http://localhost:8080 |
+| ClickHouse HTTP | http://localhost:8123 |
+| PostgreSQL | localhost:5432 |
+
+Логин по умолчанию: `admin` / `admin` (задаётся в `.env`).
+
+### Изменить пароли / параметры
+
+```bash
+# Отредактируй .env до первого запуска:
+nano .env
+make setup
+```
+
+Чтобы сбросить окружение и начать с нуля:
+
+```bash
+make down
+rm .env
+make setup
+```
+
+### Прочие команды
+
+```bash
+make up       # поднять уже собранный стек
+make down     # остановить и удалить контейнеры
+make restart  # перезапустить сервисы
+make logs     # стриминг логов всех контейнеров
+make ps       # статус контейнеров
+```
+
+---
+
 ## Быстрый старт — Python API
 
 ### Установка
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -261,6 +328,10 @@ class LoaderConfig:
     set_empty_str_to_null: bool = True
     dtypes: dict[str, str] | None = None     # col → type, из parse_ddl()
     show_progress: bool = False              # tqdm, только для ручного запуска
+
+    # Отчёт валидации
+    validation_report_dir: Path | None = None       # None — только логи; Path — писать TXT-файл
+    validation_report_include_values: bool = False  # включить примеры значений в файл
 ```
 
 Все ограничения (batch_size > 0, skip_rows ≥ 0, поддерживаемые кодировки и т.д.) проверяются в `__post_init__` при создании объекта.
@@ -279,6 +350,73 @@ class LoaderConfig:
 При `VERIFY` и `RAISE` параметр `dtypes` обязателен.
 
 При любой ошибке во время записи частично созданный output-файл **удаляется автоматически** — пользователь не получит неполный файл.
+
+После каждой валидации результат **всегда** выводится в логи (см. [Отчёт валидации](#отчёт-валидации)).
+
+---
+
+## Отчёт валидации
+
+После валидации результат всегда пишется в логи. Ошибки группируются по колонке и типу — компактно, с диапазонами строк:
+
+```
+WARNING  Validation: 54 error(s) in sales.xlsx (2 column(s) affected)
+WARNING    [datetime] column sale_date (C) — 52 cell(s), rows: 21–72
+WARNING    [integer]  column amount (B)    — 2 cell(s), rows: 5, 12
+WARNING  Fix: open sales.xlsx and correct the column(s) listed above
+```
+
+### TXT-файл (опционально)
+
+Передайте `validation_report_dir` — при наличии ошибок рядом появится файл `{stem}_validation_{timestamp}.txt`:
+
+```python
+config = LoaderConfig(
+    ...
+    error_mode=ErrorMode.COERCE,
+    dtypes={"sale_date": "datetime", "amount": "integer"},
+
+    # файл рядом с входным:
+    validation_report_dir=Path("my_file.xlsx").parent,
+
+    # или в отдельную папку:
+    # validation_report_dir=Path("/reports"),
+)
+
+result = load(config)
+if result.error_file:
+    print(f"Отчёт: {result.error_file}")
+```
+
+Содержимое файла:
+
+```
+=== Validation Report: sales.xlsx ===
+Generated: 2026-03-09 14:22:01
+
+Result: FAILED — 54 error(s) in 2 column(s)
+
+[datetime]  column sale_date (C)  (52 error(s))
+  Rows: 21–72
+
+[integer]  column amount (B)  (2 error(s))
+  Rows: 5, 12
+
+Fix hint: open sales.xlsx and correct the cell ranges listed above.
+```
+
+По умолчанию значения ячеек **не включаются** в файл (могут быть чувствительными данными). Чтобы включить:
+
+```python
+validation_report_include_values=True
+```
+
+Тогда к каждой группе добавляется строка:
+```
+  Sample values: "2024-13-45" (C21),  "n/a" (C25),  "" (C40)
+```
+
+> Если ошибок нет — файл не создаётся, `result.error_file` равен `None`.
 
 ---
 
@@ -408,7 +546,7 @@ ch_writer.write(headers=["id", "name"], rows=[(1, "Alice"), (2, "Bob")])
 
 **ClickHouseWriter** передаёт строки как кортежи (не словари) — меньше накладных расходов. Соединение закрывается в `finally` — нет утечки соединений при долгой работе Airflow-воркера.
 
-### Через Airflow DAG (новый подход)
+### Через Airflow DAG
 
 При запуске через DAG прямая запись в БД управляется через параметры `export` и `validation`. Соединения создаются автоматически через Airflow-коннекторы — вручную передавать host/port/password не нужно:
 
@@ -423,11 +561,17 @@ ch_writer.write(headers=["id", "name"], rows=[(1, "Alice"), (2, "Bob")])
 }
 ```
 
-Внутри pipeline используются `db_loader.load_to_db()` (батчевая вставка) и `table_manager.prepare()` / `finalize()` (управление транзакцией/откатом).
-
 ---
 
 ## Деплой в Airflow
+
+### Docker (рекомендуется)
+
+Самый простой способ — `make setup` (см. [Быстрый старт — Docker](#быстрый-старт--docker)). Образ собирается из `Dockerfile` в корне репозитория.
+
+Зависимости (`openpyxl`, `python-dateutil`, `tqdm`) устанавливаются при сборке образа — не при каждом старте контейнера. Код DAG-ов монтируется через volume `./dags:/opt/airflow/dags` и подхватывается немедленно без пересборки.
+
+### Ручной деплой (без Docker)
 
 **pip install не требуется.** Airflow автоматически добавляет `dags/` в `sys.path`.
 
@@ -463,10 +607,10 @@ make fmt         # ruff format
 
 Тесты покрывают все модули пакета. DAG-тесты проверяют task-функции напрямую, без поднятия Airflow — `_validate_params_fn`, `_load_data_fn` / `_load_file_fn` и `_report_fn` вынесены на уровень модуля именно для этого.
 
-Новые тест-файлы (DB-слой):
-
 | Файл | Что тестирует |
 |---|---|
+| `test_validation_report.py` | `_rows_to_ranges`, группировка, форматирование TXT, запись файла, логирование |
+| `test_loader.py` | cleanup при ошибке записи; интеграция `validation_report_dir` с `load()` |
 | `test_inferencer.py` | `infer_types()` — инференс GP/CH типов, приоритеты, лимит 200 строк |
 | `test_ddl_generator.py` | `generate_ddl()` — структура DDL, Nullable, timestamp_col, порядок колонок |
 | `test_db_schema.py` | `get_table_columns()` / `table_exists()` — маппинг типов, Nullable-unwrap |
