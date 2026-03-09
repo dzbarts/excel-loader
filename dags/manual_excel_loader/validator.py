@@ -163,6 +163,8 @@ _GP_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
         v, datetime(1, 1, 1), datetime(9999, 12, 31), "%Y-%m-%d"
     ),
     "time": validate_time,
+    "time without time zone": validate_time,
+    "time with time zone":    validate_time,
     # GP timestamp range: 4713 BC – 294276 AD
     "timestamp": lambda v: validate_datetime(
         v, datetime(1, 1, 1), datetime(9999, 12, 31, 23, 59, 59)
@@ -291,6 +293,13 @@ def get_validator(type_name: str, db_type: DatabaseType) -> Callable[[Any], Cell
             return lambda v, n=size: (
                 Ok(str(v)) if len(str(v).encode()) <= n
                 else Err(f"byte length exceeds FixedString({n})")
+            )
+
+    # 6. ClickHouse DateTime64(precision) / DateTime64(precision, 'timezone')
+    if db_type == DatabaseType.CLICKHOUSE:
+        if re.fullmatch(r"datetime64\(\d+(?:,\s*'[^']*')?\)", type_lower):
+            return lambda v: validate_datetime(
+                v, datetime(1900, 1, 1), datetime(2299, 12, 31, 23, 59, 59)
             )
 
     raise UnsupportedDataTypeError(
