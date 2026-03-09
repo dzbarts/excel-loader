@@ -29,11 +29,12 @@ from .exceptions import (
     TemplateError,
 )
 from .models import LoaderConfig, LoadResult, CellValidationError, FileValidationResult
-from .loader import load
+from .loader import load, load_rows
 
 __all__ = [
-    # Main entry point
+    # Main entry points
     "load",
+    "load_rows",
     # Config & result
     "LoaderConfig",
     "LoadResult",

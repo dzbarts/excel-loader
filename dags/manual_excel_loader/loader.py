@@ -280,6 +280,94 @@ def _wrap_with_progress(
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+def load_rows(
+    config: LoaderConfig,
+) -> tuple[list[str], Iterator, FileValidationResult]:
+    """Прочитать и валидировать файл, вернуть (headers, rows_iter, validation_result).
+
+    Не записывает файл — предназначен для прямой загрузки в БД через db_loader.
+
+    Поведение ошибок валидации определяется config.error_mode:
+        IGNORE  — строки возвращаются как есть, без проверки.
+        COERCE  — ошибочные ячейки → None, строка продолжает итерацию.
+        RAISE / VERIFY — ошибки накапливаются в FileValidationResult;
+            вызывающий код должен проверить validation_result.is_valid
+            и решить, прерывать ли загрузку.
+    """
+    needs_validation = config.error_mode in (
+        ErrorMode.VERIFY,
+        ErrorMode.RAISE,
+        ErrorMode.COERCE,
+    )
+
+    sheet, effective_config, tmpl = _resolve_reader(config)
+
+    if needs_validation and not effective_config.dtypes:
+        raise ConfigurationError(
+            "dtypes must be provided when error_mode is not IGNORE. "
+            "Pass a dtypes dict or use parse_ddl() to extract types from a DDL string."
+        )
+
+    if tmpl is not None:
+        headers = list(tmpl.headers)
+    else:
+        headers = list(sheet.headers)
+
+    sheet_headers = list(sheet.headers)
+
+    if effective_config.timestamp and effective_config.timestamp.value not in headers:
+        headers.append(effective_config.timestamp.value)
+    if effective_config.wf_load_idn:
+        headers.append("wf_load_idn")
+
+    validators: dict[str, object] = {}
+    if needs_validation and effective_config.dtypes:
+        validate_against = (
+            [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
+            if tmpl
+            else sheet.headers
+        )
+        validators = _build_validators(
+            validate_against,
+            effective_config.dtypes,
+            effective_config.db_type,
+        )
+
+    key_columns = tmpl.key_columns if tmpl is not None else None
+    validation_result = FileValidationResult()
+    _validate_headers_for_row = (
+        [h for h in tmpl.headers if h not in (tmpl.fixed_values or {})]
+        if tmpl is not None
+        else list(sheet.headers)
+    )
+
+    rows_skipped = 0
+
+    def _rows() -> Iterator:
+        nonlocal rows_skipped
+        for row_idx, raw_row in enumerate(sheet.rows):
+            if not any(cell is not None for cell in raw_row):
+                rows_skipped += 1
+                continue
+            row = _apply_row_transforms(raw_row, effective_config)
+            if needs_validation:
+                row = _validate_row(
+                    row,
+                    _validate_headers_for_row,
+                    validators,
+                    row_idx,
+                    effective_config,
+                    validation_result,
+                    key_columns=key_columns,
+                )
+            if tmpl is not None and tmpl.fixed_values:
+                row = _insert_fixed_values(row, tmpl.headers, tmpl.fixed_values)
+            row = _append_extra_columns(row, sheet_headers, effective_config)
+            yield row
+
+    return headers, _rows(), validation_result
+
+
 def load(config: LoaderConfig) -> LoadResult:
     """Запустить полный pipeline: определить формат → прочитать → валидировать → записать SQL/CSV.
 
