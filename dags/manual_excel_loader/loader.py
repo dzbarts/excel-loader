@@ -172,22 +172,27 @@ def _validate_row(
 ) -> tuple:
     """Валидировать одну строку, вернуть (возможно скорректированный) кортеж.
 
-    NULL в ключевом поле проверяется до валидации типа — это самостоятельная
-    ошибка («не может быть NULL»), а не ошибка типа («не целое число»).
+    NULL в ключевом поле — алерт (предупреждение), загрузка продолжается.
+    NULL в обычном поле — пропускается без валидации типа.
     """
     output = []
     for col_idx, (col_name, value) in enumerate(zip(headers, row)):
-        # ── Проверка ключевого поля на NULL ─────────────────────────────
+        # ── Проверка ключевого поля на NULL (алерт, не ошибка) ──────────
         if key_columns and col_name in key_columns and value is None:
-            result.add_error(CellValidationError(
+            result.add_warning(CellValidationError(
                 cell_name=_make_cell_name(
                     row_idx, col_idx, config.skip_rows, config.skip_cols
                 ),
                 cell_value=value,
                 expected_type=config.dtypes.get(col_name, "unknown"),
-                message="key column must not be NULL",
+                message="key column is NULL",
                 col_name=col_name,
             ))
+            output.append(None)
+            continue
+
+        # ── NULL в обычном поле — пропускаем валидацию типа ─────────────
+        if value is None:
             output.append(None)
             continue
 
@@ -217,7 +222,7 @@ def _apply_row_transforms(row: tuple, config: LoaderConfig) -> tuple:
     if config.is_strip:
         row = tuple(v.strip() if isinstance(v, str) else v for v in row)
     if config.set_empty_str_to_null:
-        row = tuple(None if v == "" else v for v in row)
+        row = tuple(None if (isinstance(v, str) and not v.strip()) else v for v in row)
     return row
 
 

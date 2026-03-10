@@ -122,10 +122,14 @@ class FileValidationResult:
 
     is_valid: bool = True
     errors: list[CellValidationError] = field(default_factory=list)
+    warnings: list[CellValidationError] = field(default_factory=list)
 
     def add_error(self, error: CellValidationError) -> None:
         self.errors.append(error)
         self.is_valid = False
+
+    def add_warning(self, warning: CellValidationError) -> None:
+        self.warnings.append(warning)
 
 
 @dataclass

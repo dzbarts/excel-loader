@@ -93,6 +93,24 @@ def log_validation_result(
     logger: logging.Logger,
 ) -> None:
     """Логирует итог валидации. Вызывается всегда после валидации."""
+    if result.warnings:
+        warn_groups = _group_errors(result.warnings)
+        logger.warning(
+            "Validation: %d warning(s) in %s (%d column(s) affected)",
+            len(result.warnings),
+            input_file.name,
+            len(warn_groups),
+        )
+        for (col_letter, col_name, expected_type), errs in warn_groups.items():
+            rows = [row for row, _ in errs]
+            logger.warning(
+                "  [%s] column %s — %d cell(s), rows: %s",
+                expected_type,
+                _col_label(col_letter, col_name),
+                len(rows),
+                _rows_to_ranges(rows),
+            )
+
     if result.is_valid:
         logger.info("Validation passed: 0 errors in %s", input_file.name)
         return
@@ -129,28 +147,51 @@ def _format_report(
         "",
     ]
 
-    if result.is_valid:
+    if result.is_valid and not result.warnings:
         lines.append("Result: OK — no errors found.")
         return "\n".join(lines)
 
-    groups = _group_errors(result.errors)
-    lines.append(
-        f"Result: FAILED — {len(result.errors)} error(s) in {len(groups)} column(s)"
-    )
+    if result.is_valid:
+        lines.append(f"Result: OK — no errors found.")
+    else:
+        groups = _group_errors(result.errors)
+        lines.append(
+            f"Result: FAILED — {len(result.errors)} error(s) in {len(groups)} column(s)"
+        )
+
+    if result.warnings:
+        warn_groups = _group_errors(result.warnings)
+        lines.append(
+            f"Warnings: {len(result.warnings)} warning(s) in {len(warn_groups)} column(s)"
+        )
+
     lines.append("")
 
-    for (col_letter, col_name, expected_type), errs in groups.items():
-        rows = [row for row, _ in errs]
-        label = _col_label(col_letter, col_name)
-        lines.append(f"[{expected_type}]  column {label}  ({len(rows)} error(s))")
-        lines.append(f"  Rows: {_rows_to_ranges(rows)}")
-        if include_sample_values:
-            samples = errs[:3]
-            sample_str = ",  ".join(
-                f'"{e.cell_value!r}" ({e.cell_name})' for _, e in samples
-            )
-            lines.append(f"  Sample values: {sample_str}")
+    if not result.is_valid:
+        groups = _group_errors(result.errors)
+        for (col_letter, col_name, expected_type), errs in groups.items():
+            rows = [row for row, _ in errs]
+            label = _col_label(col_letter, col_name)
+            lines.append(f"[{expected_type}]  column {label}  ({len(rows)} error(s))")
+            lines.append(f"  Rows: {_rows_to_ranges(rows)}")
+            if include_sample_values:
+                samples = errs[:3]
+                sample_str = ",  ".join(
+                    f'"{e.cell_value!r}" ({e.cell_name})' for _, e in samples
+                )
+                lines.append(f"  Sample values: {sample_str}")
+            lines.append("")
+
+    if result.warnings:
+        warn_groups = _group_errors(result.warnings)
+        lines.append("--- Warnings ---")
         lines.append("")
+        for (col_letter, col_name, expected_type), errs in warn_groups.items():
+            rows = [row for row, _ in errs]
+            label = _col_label(col_letter, col_name)
+            lines.append(f"[{expected_type}]  column {label}  ({len(rows)} warning(s))")
+            lines.append(f"  Rows: {_rows_to_ranges(rows)}")
+            lines.append("")
 
     return "\n".join(lines)
 
