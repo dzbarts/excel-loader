@@ -11,9 +11,7 @@ from .exceptions import UnsupportedDataTypeError
 from .result import Ok, Err, CellResult
 
 
-# ── Primitive validators ──────────────────────────────────────────────────────
-# Pure functions: accept a value, return Ok(converted) or Err(reason).
-# Created once at module level — not inside methods or loops.
+# ── Примитивные валидаторы ───────────────────────────────────────────────────
 
 
 def validate_integer(value: Any, min_val: int, max_val: int) -> CellResult[int]:
@@ -41,11 +39,13 @@ def validate_decimal(value: Any, precision: int = 32, scale: int = 8) -> CellRes
 
     precision — всего значащих цифр; scale — из них после запятой.
     Использует decimal.Decimal для корректной обработки научной нотации и NaN/Inf.
+    Float-значения из Excel округляются до scale знаков перед проверкой —
+    это корректно, т.к. при записи в БД они всё равно будут округлены.
     """
     if isinstance(value, str) and "," in value:
         return Err("use a dot instead of a comma as decimal separator")
     try:
-        d = Decimal(str(value))
+        d = Decimal(str(round(value, scale) if isinstance(value, float) else value))
     except InvalidOperation:
         return Err("not a number")
     sign, digits, exponent = d.as_tuple()
@@ -76,11 +76,11 @@ def validate_datetime(
 ) -> CellResult[str]:
     try:
         if isinstance(value, datetime):
-            pass  # already datetime, use as-is
+            pass  # уже datetime, оставляем как есть
         elif isinstance(value, date):
             value = datetime(value.year, value.month, value.day)
         elif isinstance(value, time):
-            # time-only: wrap with a sentinel date for range check
+            # только время без даты — подставляем дату-заглушку для проверки диапазона
             value = datetime(1900, 1, 1, value.hour, value.minute, value.second)
         else:
             value = dateutil_parser.parse(str(value))
@@ -93,7 +93,6 @@ def validate_datetime(
     return Ok(value.strftime(fmt))
 
 def validate_time(value: Any) -> CellResult[str]:
-    """Parse time value and return HH:MM:SS string. No date-range check."""
     try:
         if isinstance(value, time):
             return Ok(value.strftime("%H:%M:%S"))
@@ -105,7 +104,7 @@ def validate_time(value: Any) -> CellResult[str]:
         return Err("could not parse time value")
 
 def validate_boolean_gp(value: Any) -> CellResult[str]:
-    # Full list per GP docs: https://docs.vmware.com/en/VMware-Greenplum/7/
+    # Полный список по документации GP: https://docs.vmware.com/en/VMware-Greenplum/7/
     allowed = {"true", "false", "0", "1", "t", "f", "y", "n", "yes", "no", "on", "off", "null"}
     v = str(value).strip().lower()
     if v not in allowed:
@@ -122,7 +121,7 @@ def validate_uuid(value: Any) -> CellResult[str]:
 
 
 def validate_interval(value: Any) -> CellResult[str]:
-    # GP interval is free-form text; basic pattern check only
+    # GP interval — произвольный текст, проверяем только базовый паттерн
     pattern = re.compile(
         r"^-?\d+\s+(?:year|month|day|hour|minute|second)s?"
         r"(?:\s+-?\d+\s+(?:year|month|day|hour|minute|second)s?)*$",
@@ -134,31 +133,27 @@ def validate_interval(value: Any) -> CellResult[str]:
     return Ok(v)
 
 
-# ── Type → validator mapping ──────────────────────────────────────────────────
-# Built once at import time, never recreated per-call.
+# ── Маппинг тип → валидатор ───────────────────────────────────────────────────
+# Строится один раз при импорте модуля.
 
 _GP_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
-    # Integer types
     # https://docs.vmware.com/en/VMware-Greenplum/7/greenplum-database/ref_guide-data_types.html
     "smallint":   lambda v: validate_integer(v, -32768, 32767),
     "integer":    lambda v: validate_integer(v, -2_147_483_648, 2_147_483_647),
     "bigint":     lambda v: validate_integer(v, -9_223_372_036_854_775_808, 9_223_372_036_854_775_807),
 
-    # Serial pseudo-types (auto-increment; normally not present in Excel uploads,
-    # but accepted here for completeness)
+    # serial — автоинкремент, в Excel редкость, но поддерживаем
     "smallserial": lambda v: validate_integer(v, 1, 32_767),
     "serial":      lambda v: validate_integer(v, 1, 2_147_483_647),
     "bigserial":   lambda v: validate_integer(v, 1, 9_223_372_036_854_775_807),
 
-    # Floating-point
     "real":             lambda v: validate_float(v, -3.4e38, 3.4e38),
     "double precision": lambda v: validate_float(v, -1.7e308, 1.7e308),
 
-    # String types (decimal/numeric/varchar/char handled via regex in get_validator)
+    # decimal/numeric/varchar/char — через regex в get_validator
     "text": lambda v: validate_string(v),
 
-    # Date/time
-    # GP date range: 4713 BC – 294276 AD; capped at Python datetime limits here
+    # GP date range: 4713 BC – 294276 AD; ограничено пределами Python datetime
     "date": lambda v: validate_datetime(
         v, datetime(1, 1, 1), datetime(9999, 12, 31), "%Y-%m-%d"
     ),
@@ -166,7 +161,7 @@ _GP_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     "time without time zone": validate_time,
     "time with time zone":    validate_time,
     # GP timestamp range: 4713 BC – 294276 AD
-    "timestamp": lambda v: validate_datetime(
+    "timestamp": lambda v: validate_datetime(  # тот же диапазон что и date
         v, datetime(1, 1, 1), datetime(9999, 12, 31, 23, 59, 59)
     ),
     "timestamp without time zone": lambda v: validate_datetime(
@@ -175,18 +170,14 @@ _GP_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     "timestamp with time zone": lambda v: validate_datetime(
         v, datetime(1, 1, 1), datetime(9999, 12, 31, 23, 59, 59)
     ),
-    # interval: free-form text with pattern validation
     "interval": lambda v: validate_interval(v),
 
-    # Other
     "boolean": lambda v: validate_boolean_gp(v),
     "uuid":    lambda v: validate_uuid(v),
-    # tsrange: complex range type; validate as non-empty string for now
-    "tsrange": lambda v: validate_string(v),
+    "tsrange": lambda v: validate_string(v),  # сложный range-тип, проверяем как строку
 }
 
 _CH_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
-    # Signed integers
     # https://clickhouse.com/docs/sql-reference/data-types/int-uint
     "int8":   lambda v: validate_integer(v, -128, 127),
     "int16":  lambda v: validate_integer(v, -32_768, 32_767),
@@ -195,7 +186,6 @@ _CH_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     "int128": lambda v: validate_integer(v, -(2**127), 2**127 - 1),
     "int256": lambda v: validate_integer(v, -(2**255), 2**255 - 1),
 
-    # Unsigned integers
     "uint8":   lambda v: validate_integer(v, 0, 255),
     "uint16":  lambda v: validate_integer(v, 0, 65_535),
     "uint32":  lambda v: validate_integer(v, 0, 4_294_967_295),
@@ -203,22 +193,17 @@ _CH_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     "uint128": lambda v: validate_integer(v, 0, 2**128 - 1),
     "uint256": lambda v: validate_integer(v, 0, 2**256 - 1),
 
-    # Floating-point
     # https://clickhouse.com/docs/sql-reference/data-types/float
     "float32": lambda v: validate_float(v, -3.4e38, 3.4e38),
     "float64": lambda v: validate_float(v, -1.7e308, 1.7e308),
 
-    # String
     "string": lambda v: validate_string(v),
 
-    # Boolean
     # https://clickhouse.com/docs/sql-reference/data-types/boolean
     "bool": lambda v: validate_boolean_gp(v),
 
-    # UUID
     "uuid": lambda v: validate_uuid(v),
 
-    # Date types — ranges per official CH docs:
     # Date:   [1970-01-01, 2149-06-06]
     # Date32: [1900-01-01, 2299-12-31]
     # https://clickhouse.com/docs/sql-reference/data-types/date
@@ -230,7 +215,7 @@ _CH_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     ),
 
     # DateTime:   [1970-01-01 00:00:00, 2106-02-07 06:28:15]
-    # DateTime64: [1900-01-01, 2299-12-31] with sub-second precision
+    # DateTime64: [1900-01-01, 2299-12-31], с суб-секундной точностью
     # https://clickhouse.com/docs/sql-reference/data-types/datetime
     "datetime": lambda v: validate_datetime(
         v, datetime(1970, 1, 1), datetime(2106, 2, 7, 6, 28, 15)
@@ -241,23 +226,21 @@ _CH_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
 }
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+# ── Публичный API ────────────────────────────────────────────────────────────
 
 def get_validator(type_name: str, db_type: DatabaseType) -> Callable[[Any], CellResult]:
-    """
-    Return the validator function for a given type name and target database.
+    """Возвращает функцию-валидатор для заданного типа и БД.
 
-    The returned callable has signature ``(value: Any) -> CellResult`` and can
-    be stored once per column, then called for every row — avoiding repeated
-    registry lookups.
+    Валидатор сохраняется один раз на колонку и вызывается для каждой строки —
+    без повторного обращения к реестру.
 
     Raises:
-        UnsupportedDataTypeError: if the type is not recognised for the given DB.
+        UnsupportedDataTypeError: тип не поддерживается для выбранной БД.
     """
     registry = _GP_VALIDATORS if db_type == DatabaseType.GREENPLUM else _CH_VALIDATORS
     type_lower = type_name.lower().strip()
 
-    # 1. Exact match
+    # 1. Точное совпадение
     if type_lower in registry:
         return registry[type_lower]
 
@@ -276,7 +259,7 @@ def get_validator(type_name: str, db_type: DatabaseType) -> Callable[[Any], Cell
             else Err(f"length {len(str(v))} exceeds maximum {n}")
         )
 
-    # 4. char(N) / character(N) — fixed length
+    # 4. char(N) / character(N) — фиксированная длина
     char_match = re.fullmatch(r"(?:char|character)\((\d+)\)", type_lower)
     if char_match:
         size = int(char_match.group(1))

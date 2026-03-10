@@ -9,39 +9,37 @@ from ..enums import DatabaseType
 
 
 class BaseWriter(ABC):
-    """
-    Common interface for all output sinks.
+    """Общий интерфейс для всех врайтеров.
 
-    Each concrete writer receives its configuration once at construction time
-    (via a frozen dataclass) and exposes a single write() method that
-    accepts column headers and an iterable of already-validated rows.
+    Конфигурация передаётся один раз в конструктор через frozen-датакласс.
+    Единственный публичный метод — write(), который принимает заголовки
+    и итерируемый набор уже провалидированных строк.
     """
 
     @abstractmethod
-    def write(self, headers: list[str], rows: Iterable[tuple]) -> None:
-        """Write rows to the configured destination."""
+    def write(self, headers: list[str], rows: Iterable[tuple]) -> None: ...
 
 
-# ── File-writer config ────────────────────────────────────────────────────────
+# ── Конфиг файловых врайтеров ─────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class FileWriterConfig:
-    """Configuration shared by SQL and CSV file writers."""
+    """Общий конфиг для SQL и CSV врайтеров."""
 
     output_path: Path
-    db_type: DatabaseType       # needed by SqlFileWriter to pick escape strategy
+    db_type: DatabaseType       # нужен SqlFileWriter для выбора стратегии экранирования
     table_name: str
     scheme_name: str
     encoding: str = "utf-8"
-    batch_size: int = 10        # SQL only — ignored by CsvFileWriter
-    delimiter: str = ","        # CSV only — ignored by SqlFileWriter
+    batch_size: int = 10        # только для SQL, CsvFileWriter игнорирует
+    delimiter: str = ","        # только для CSV, SqlFileWriter игнорирует
 
 
-# ── Database-writer config ────────────────────────────────────────────────────
+# ── Конфиг DB-врайтеров ───────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class DbWriterConfig:
-    """Connection + target-table configuration for direct database writers."""
+    """Параметры подключения и целевой таблицы для прямой записи в БД."""
 
     host: str
     port: int

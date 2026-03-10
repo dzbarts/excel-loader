@@ -361,6 +361,8 @@ def _load_file_fn(
 ) -> dict[str, Any]:
     """Загрузка в файл (to_sql / to_csv)."""
     params = run_params
+    from dataclasses import replace as _replace
+
     from manual_excel_loader import load
     from manual_excel_loader.enums import DatabaseType, DumpType, ErrorMode, TimestampField
     from manual_excel_loader.exceptions import DataValidationError, FileReadError
@@ -397,7 +399,14 @@ def _load_file_fn(
     )
 
     try:
-        result = load(cfg)
+        if cfg.error_mode == ErrorMode.RAISE:
+            # Сначала полная валидация без записи файла.
+            # Если ошибки — поднимет DataValidationError, файл не создаётся.
+            load(_replace(cfg, error_mode=ErrorMode.VERIFY))
+            # Валидация прошла чисто — записываем файл без повторной проверки.
+            result = load(_replace(cfg, error_mode=ErrorMode.IGNORE))
+        else:
+            result = load(cfg)
     except DataValidationError as exc:
         n = len(exc.validation_result.errors) if exc.validation_result else 0
         log.error("Ошибки валидации (%d ячеек): %s", n, exc)
@@ -434,12 +443,15 @@ def _load_db_fn(
 ) -> dict[str, Any]:
     """Загрузка в БД (append / truncate_load / via_backup)."""
     params = run_params
+    from dataclasses import replace as _replace
+
     from manual_excel_loader import load_rows
     from manual_excel_loader.db_loader import load_to_db
     from manual_excel_loader.enums import DatabaseType, ErrorMode, TimestampField
     from manual_excel_loader.exceptions import DataValidationError
     from manual_excel_loader.models import LoaderConfig
     from manual_excel_loader.table_manager import finalize, prepare
+    from manual_excel_loader.validation_report import log_validation_result, write_report
 
     db_type    = DatabaseType(params["db_type"])
     export     = params["export"]
@@ -448,16 +460,16 @@ def _load_db_fn(
     dtypes     = dtype_info.get("dtypes")
     create_ddl = dtype_info.get("create_ddl")
 
-    # ── Конфиг загрузчика ─────────────────────────────────────────────────────
     validation = params.get("validation", "bd")
     error_mode_str = "ignore" if validation == "none" else params.get("error_mode", "raise")
+    error_mode = ErrorMode(error_mode_str)
 
     cfg = LoaderConfig(
         input_file=Path(params["input_file"]),
         db_type=db_type,
         table_name=table,
         scheme_name=scheme,
-        error_mode=ErrorMode(error_mode_str),
+        error_mode=error_mode,
         sheet_name=params.get("sheet_name"),
         skip_rows=int(params.get("skip_rows", 0)),
         skip_cols=int(params.get("skip_cols", 0)),
@@ -475,13 +487,36 @@ def _load_db_fn(
         validation_report_dir=_resolve_report_dir(params),
     )
 
+    # ── RAISE: валидация ДО подготовки таблицы и вставки ─────────────────────
+    # Полный проход по данным без записи в БД. Если ошибки — таблица не трогается.
+    if error_mode == ErrorMode.RAISE:
+        _, rows_check, val_result = load_rows(_replace(cfg, error_mode=ErrorMode.VERIFY))
+        for _ in rows_check:
+            pass  # дренируем итератор чтобы накопить ошибки валидации
+        log_validation_result(val_result, cfg.input_file, log)
+        if not val_result.is_valid:
+            if cfg.validation_report_dir is not None:
+                report_file = write_report(
+                    val_result,
+                    cfg.input_file,
+                    cfg.validation_report_dir,
+                    include_sample_values=cfg.validation_report_include_values,
+                )
+                log.info("Validation report saved: %s", report_file)
+            raise DataValidationError(
+                f"Validation failed: {len(val_result.errors)} error(s).",
+                val_result,
+            )
+        # Валидация чистая — перезагружаем без валидации для вставки
+        load_cfg = _replace(cfg, error_mode=ErrorMode.IGNORE)
+        headers, rows_iter, validation_result = load_rows(load_cfg)
+    else:
+        headers, rows_iter, validation_result = load_rows(cfg)
+
     # ── Подготовка таблицы ────────────────────────────────────────────────────
     ctx = prepare(scheme, table, db_type, export, create_ddl)
     gp_conn   = ctx.get("conn")
     ch_client = ctx.get("client")
-
-    # ── Чтение + валидация ────────────────────────────────────────────────────
-    headers, rows_iter, validation_result = load_rows(cfg)
 
     # ── Вставка в БД ─────────────────────────────────────────────────────────
     rows_written = 0
@@ -504,14 +539,10 @@ def _load_db_fn(
     finally:
         finalize(ctx, success)
 
-    # ── Проверка результатов валидации ────────────────────────────────────────
+    # ── Проверка результатов валидации (для COERCE / VERIFY) ──────────────────
     has_errors = not validation_result.is_valid
-    if has_errors and ErrorMode(error_mode_str) == ErrorMode.RAISE:
-        n = len(validation_result.errors)
-        raise DataValidationError(
-            f"Validation failed: {n} error(s).",
-            validation_result,
-        )
+    if has_errors and error_mode == ErrorMode.COERCE:
+        log_validation_result(validation_result, cfg.input_file, log)
 
     return {
         "output_file":  None,

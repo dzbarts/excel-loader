@@ -7,7 +7,6 @@ from .base import BaseWriter, FileWriterConfig
 
 
 class CsvFileWriter(BaseWriter):
-    """Writes validated rows to a CSV file."""
 
     def __init__(self, config: FileWriterConfig) -> None:
         self._config = config
@@ -16,7 +15,7 @@ class CsvFileWriter(BaseWriter):
         with open(
             self._config.output_path,
             "w",
-            newline="",           # let csv module handle line endings
+            newline="",           # переносы строк отдаём csv-модулю
             encoding=self._config.encoding,
         ) as fh:
             writer = csv.writer(

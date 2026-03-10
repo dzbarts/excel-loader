@@ -7,22 +7,21 @@ if TYPE_CHECKING:
 
 
 class ExcelLoaderError(Exception):
-    """Base exception for all excel-loader errors."""
+    """Базовый класс для всех ошибок excel-loader."""
 
 
 class FileReadError(ExcelLoaderError):
-    """Cannot open or read the source file."""
+    """Файл не найден или не читается."""
 
 
 class HeaderValidationError(ExcelLoaderError):
-    """Column headers are missing, invalid, or duplicated."""
+    """Заголовок пустой, содержит недопустимые символы или дублирующиеся имена."""
 
 
 class DataValidationError(ExcelLoaderError):
-    """One or more cells failed type validation.
+    """Одна или несколько ячеек не прошли валидацию типов.
 
-    Attributes:
-        validation_result: Full FileValidationResult with all cell errors.
+    Атрибут validation_result содержит полный список ошибок по ячейкам.
     """
 
     def __init__(self, message: str, validation_result: FileValidationResult) -> None:
@@ -31,16 +30,16 @@ class DataValidationError(ExcelLoaderError):
 
 
 class UnsupportedDataTypeError(ExcelLoaderError):
-    """The requested data type is not supported for the target database."""
+    """Тип данных не поддерживается для выбранной БД."""
 
 
 class ConfigurationError(ExcelLoaderError):
-    """Invalid or incomplete loader configuration."""
+    """Некорректный или неполный конфиг загрузчика."""
 
 
 class DumpCreationError(ExcelLoaderError):
-    """Failed to create the output SQL/CSV file."""
+    """Ошибка при создании выходного SQL/CSV файла."""
 
 
 class TemplateError(ExcelLoaderError):
-    """ODS template structure is invalid or inconsistent."""
+    """Структура шаблона ODS нарушена или несовместима."""

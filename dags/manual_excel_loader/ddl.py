@@ -1,15 +1,10 @@
 """
-DDL parser for GreenPlum and ClickHouse CREATE TABLE statements.
+Парсер DDL CREATE TABLE для GreenPlum и ClickHouse.
 
-Public API
-----------
 parse_ddl(ddl, db_type) -> dict[str, str]
-    Parse a CREATE TABLE statement and return a mapping of
-    column name -> type string, preserving original type notation
-    (e.g. "decimal(10,2)", "character varying(255)", "Nullable(String)").
-
-The result is intended to be passed as LoaderConfig.dtypes so that
-the validator can match columns by name rather than by position.
+    Парсит CREATE TABLE и возвращает маппинг col_name → type_str
+    в нотации, которую понимает get_validator() (например "decimal(10,2)").
+    Результат передаётся в LoaderConfig.dtypes.
 """
 from __future__ import annotations
 
@@ -20,23 +15,19 @@ from .enums import DatabaseType
 from .exceptions import ConfigurationError
 
 
-# ── Internal: text cleanup ───────────────────────────────────────────────────
+# ── Внутренние хелперы ───────────────────────────────────────────────────────
 
 def _strip_comments(ddl: str) -> str:
-    """Remove SQL line comments (--) and block comments (/* */)."""
     ddl = re.sub(r"/\*.*?\*/", " ", ddl, flags=re.DOTALL)
     ddl = re.sub(r"--[^\n]*", " ", ddl)
     return ddl
 
 
 def _extract_columns_body(ddl: str) -> str:
-    """
-    Extract the text inside the outermost parentheses of CREATE TABLE.
+    """Вытаскивает содержимое внешних скобок CREATE TABLE.
 
-    Uses character-by-character scanning so nested parens in type
-    definitions (Decimal(10,2), Nullable(String)) don't confuse the parser.
-
-    Raises ConfigurationError if no matching parentheses are found.
+    Идём посимвольно — чтобы вложенные скобки в типах вроде Decimal(10,2)
+    не сломали парсер.
     """
     start = ddl.find("(")
     if start == -1:
@@ -55,11 +46,9 @@ def _extract_columns_body(ddl: str) -> str:
 
 
 def _split_column_defs(body: str) -> list[str]:
-    """
-    Split column definitions by top-level commas only.
+    """Разбивает тело CREATE TABLE на отдельные определения колонок.
 
-    A comma inside Decimal(10, 2) or Array(Tuple(Int32, String))
-    must NOT be treated as a column separator.
+    Запятые внутри Decimal(10, 2) или Array(Tuple(...)) не считаются разделителями.
     """
     parts: list[str] = []
     current: list[str] = []
@@ -83,15 +72,14 @@ def _split_column_defs(body: str) -> list[str]:
 
 
 def _normalize_col_name(raw: str) -> str:
-    """Strip quoting characters and lowercase."""
     return raw.strip().strip('"`[]').lower()
 
 
 def _extract_type_token(rest: str) -> str:
-    """
-    Given text after the column name, extract the full type token
-    (including nested parentheses like Decimal(10,2)) stopping at the
-    first whitespace that is outside any parentheses.
+    """Вытаскивает токен типа после имени колонки, включая вложенные скобки.
+
+    Останавливается на первом пробеле вне скобок — то есть Decimal(10,2)
+    читается целиком, а NOT NULL уже не захватывается.
     """
     type_chars: list[str] = []
     depth = 0
@@ -114,15 +102,15 @@ def _extract_type_token(rest: str) -> str:
     return "".join(type_chars)
 
 
-# ── GreenPlum parser ─────────────────────────────────────────────────────────
+# ── Парсер GreenPlum ─────────────────────────────────────────────────────────
 
-# Lines that start with these keywords are not column definitions
+# Строки с этих ключевых слов — не определения колонок
 _GP_SKIP = re.compile(
     r"^\s*(constraint|primary\s+key|foreign\s+key|unique|check)\b",
     re.IGNORECASE,
 )
 
-# Multi-word type prefixes for GP — order matters (longest first)
+# Составные типы GP — порядок важен, длинные раньше
 _GP_MULTIWORD_TYPES = (
     "timestamp without time zone",
     "timestamp with time zone",
@@ -133,7 +121,7 @@ _GP_MULTIWORD_TYPES = (
     "character",  # must come after "character varying"
 )
 
-# Modifiers that terminate the type string
+# Модификаторы, которые обрывают тип
 _GP_MODIFIERS = re.compile(
     r"\b(not\s+null|null|default|encoding|storage|collate|distributed|with\s+\()\b.*$",
     re.IGNORECASE,
@@ -141,15 +129,11 @@ _GP_MODIFIERS = re.compile(
 
 
 def _parse_gp_column(col_def: str) -> tuple[str, str] | None:
-    """
-    Parse one GP column definition and return (name, type) or None if
-    this is not a column line (e.g. a table constraint).
-    """
+    """Парсит одно определение колонки GP. Возвращает (name, type) или None для constraint-строк."""
     stripped = col_def.strip()
     if not stripped or _GP_SKIP.match(stripped):
         return None
 
-    # Extract the column name: first token, possibly quoted
     name_match = re.match(r'^"?(?P<name>[\w]+)"?\s+', stripped)
     if not name_match:
         return None
@@ -157,7 +141,7 @@ def _parse_gp_column(col_def: str) -> tuple[str, str] | None:
     name = _normalize_col_name(name_match.group("name"))
     rest = stripped[name_match.end():]
 
-    # Check for multi-word types first (longest match wins)
+    # Составные типы проверяем первыми (longest match wins)
     matched_type: str | None = None
     for mw in _GP_MULTIWORD_TYPES:
         if rest.lower().startswith(mw):
@@ -175,7 +159,6 @@ def _parse_gp_column(col_def: str) -> tuple[str, str] | None:
     if not matched_type:
         return None
 
-    # Strip trailing modifier keywords
     clean = _GP_MODIFIERS.sub("", matched_type).strip().rstrip(",")
     clean = clean.strip().lower()
 
@@ -196,7 +179,7 @@ def _parse_ddl_gp(ddl: str) -> dict[str, str]:
     return result
 
 
-# ── ClickHouse parser ────────────────────────────────────────────────────────
+# ── Парсер ClickHouse ────────────────────────────────────────────────────────
 
 _CH_SKIP = re.compile(
     r"^\s*(index\b|projection\b|constraint\b)",
@@ -210,18 +193,17 @@ _CH_MODIFIERS = re.compile(
 
 
 def _unwrap_nullable(type_str: str) -> str:
-    """Nullable(X) → X, so the validator sees the inner type."""
+    """Nullable(X) → X, валидатор работает с внутренним типом."""
     m = re.fullmatch(r"[Nn]ullable\((.+)\)", type_str.strip())
     return m.group(1) if m else type_str
 
 
 def _parse_ch_column(col_def: str) -> tuple[str, str] | None:
-    """Parse one CH column definition and return (name, type) or None."""
+    """Парсит одно определение колонки CH. Возвращает (name, type) или None."""
     stripped = col_def.strip()
     if not stripped or _CH_SKIP.match(stripped):
         return None
 
-    # Name: backtick-quoted or plain identifier
     name_match = re.match(r"^`?(?P<name>[\w]+)`?\s+", stripped)
     if not name_match:
         return None
@@ -233,7 +215,6 @@ def _parse_ch_column(col_def: str) -> tuple[str, str] | None:
     if not raw_type:
         return None
 
-    # Strip modifiers
     clean = _CH_MODIFIERS.sub("", raw_type).strip()
     clean = _unwrap_nullable(clean)
 
@@ -254,7 +235,7 @@ def _parse_ddl_ch(ddl: str) -> dict[str, str]:
     return result
 
 
-# ── Public API ───────────────────────────────────────────────────────────────
+# ── Публичный API ────────────────────────────────────────────────────────────
 
 _PARSERS: dict[DatabaseType, Callable[[str], dict[str, str]]] = {
     DatabaseType.GREENPLUM: _parse_ddl_gp,
@@ -263,40 +244,14 @@ _PARSERS: dict[DatabaseType, Callable[[str], dict[str, str]]] = {
 
 
 def parse_ddl(ddl: str, db_type: DatabaseType) -> dict[str, str]:
-    """
-    Parse a CREATE TABLE DDL string and return a column→type mapping.
+    """Парсит CREATE TABLE и возвращает маппинг {col_name: type_str}.
 
-    The returned dict maps **lowercase column names** to their type strings
-    in the notation expected by ``get_validator()``.
-
-    Example::
-
-        ddl = '''
-            CREATE TABLE hr.employees (
-                id          integer         NOT NULL,
-                full_name   text,
-                salary      decimal(12, 2),
-                hired_at    date
-            ) DISTRIBUTED BY (id);
-        '''
-        types = parse_ddl(ddl, DatabaseType.GREENPLUM)
-        # → {"id": "integer", "full_name": "text",
-        #    "salary": "decimal(12,2)", "hired_at": "date"}
-
-    The result can be passed directly as ``LoaderConfig.dtypes``.
-    Columns present in DDL but absent in the Excel file are silently ignored.
-    Columns present in Excel but absent in DDL are not validated.
-
-    Args:
-        ddl:     Full ``CREATE TABLE`` statement (comments allowed).
-        db_type: Target database dialect.
-
-    Returns:
-        ``dict[str, str]`` — column name → type string.
+    Имена колонок приводятся к нижнему регистру.
+    Колонки из DDL, которых нет в Excel — игнорируются.
+    Колонки из Excel, которых нет в DDL — проходят без валидации.
 
     Raises:
-        ConfigurationError: if the DDL cannot be parsed (empty, no
-                            parentheses, unbalanced structure).
+        ConfigurationError: DDL пустой, нет скобок или структура нарушена.
     """
     if not ddl or not ddl.strip():
         raise ConfigurationError("DDL string is empty.")

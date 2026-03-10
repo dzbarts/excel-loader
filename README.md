@@ -250,7 +250,7 @@ dtypes = parse_ddl(ddl_string, DatabaseType.GREENPLUM)
 | `export` | `truncate_load`/`append`/`via_backup`/`to_sql`/`to_csv` | — | Режим выгрузки |
 | `ddl_string` | string | — | DDL-строка (только при `validation=user_string`) |
 | `output_dir` | string | — | Каталог для файла (только при `export=to_sql`/`to_csv`) |
-| `error_mode` | `raise`/`coerce`/`ignore`/`verify` | — | Как реагировать на ошибки валидации |
+| `error_mode` | `raise`/`coerce`/`ignore`/`verify` | — | Реакция на ошибки: `raise` — валидация перед загрузкой, при ошибках отмена; `coerce` — ошибки → NULL; `ignore` — без валидации; `verify` — только проверка |
 | `sheet_name` | string | — | Лист Excel (default: активный) |
 | `skip_rows` | integer | — | Пропустить N строк перед заголовком |
 | `skip_cols` | integer | — | Пропустить N столбцов слева |
@@ -320,14 +320,16 @@ class LoaderConfig:
 |---|---|
 | `IGNORE` | Грузим как есть, без валидации |
 | `COERCE` | Валидируем; ошибочные ячейки → NULL, загрузка продолжается |
-| `VERIFY` | Только проверка, файл не создаётся; при ошибках — `DataValidationError` |
-| `RAISE` | Валидация + запись (ошибки → NULL); при ошибках — `DataValidationError` |
+| `VERIFY` | Только проверка без записи; при ошибках — `DataValidationError` |
+| `RAISE` | Сначала полная валидация: если чисто — пишем/грузим; если ошибки — `DataValidationError`, файл/таблица не трогается |
 
 При `VERIFY` и `RAISE` параметр `dtypes` обязателен.
 
 Если запись падает в середине — частично созданный output-файл **удаляется автоматически**. Неполных файлов не остаётся.
 
 Результат валидации **всегда** пишется в логи — независимо от режима.
+
+> **NULL в данных** — пустые ячейки (в том числе состоящие только из пробелов) конвертируются в NULL до валидации. Тип для NULL не проверяется. NULL в ключевом поле (из шаблона `klad_config`) — алерт в отчёте, загрузка продолжается.
 
 ---
 
@@ -373,8 +375,13 @@ Result: FAILED — 54 error(s) in 2 column(s)
 [integer]  column amount (B)  (2 error(s))
   Rows: 5, 12
 
-Fix hint: open sales.xlsx and correct the cell ranges listed above.
+--- Warnings ---
+
+[text]  column key_id (A)  (3 warning(s))
+  Rows: 5, 12, 30
 ```
+
+Warnings (например, NULL в ключевых колонках) выводятся отдельной секцией и не влияют на статус `Result`.
 
 По умолчанию значения ячеек **не включаются** — они могут быть чувствительными данными. Чтобы добавить:
 
