@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Env файлы (секреты — никогда в git)
+.env
+*.env
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (локальные данные)
+volumes/
+
+# Локальные тестовые файлы (не для git)
+dags/samples/
+
+# Claude Code / MCP / Serena (локально, не для git)
+.claude/
+.mcp.json
+.serena/

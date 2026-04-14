@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "manual-excel-loader"
+version = "0.1.0"
+description = "Excel/CSV/SQL → SQL/CSV loader with data validation for GreenPlum and ClickHouse"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1,<4.0",
+    "python-dateutil>=2.9,<3.0",
+    "tqdm>=4.66,<5.0",
+]
+
+# Пакет лежит в dags/, что позволяет копировать dags/ напрямую в $AIRFLOW_HOME/dags/
+# без pip install — Airflow добавляет dags/ в sys.path автоматически.
+[tool.setuptools.packages.find]
+where = ["dags"]
