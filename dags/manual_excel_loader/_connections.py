@@ -54,12 +54,15 @@ def get_ch_client():
     from clickhouse_driver import Client
 
     c = BaseHook.get_connection(_CH_CONN_ID)
+    extra = c.extra_dejson
     return Client(
         host=c.host,
         port=int(c.port or 9000),
         database=c.schema,
         user=c.login,
         password=c.password,
+        secure=extra.get("secure", False),
+        verify=extra.get("verify", False),
     )
 
 

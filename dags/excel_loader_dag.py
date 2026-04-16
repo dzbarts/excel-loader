@@ -371,19 +371,26 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
     # ── ods_template: из klad_config ─────────────────────────────────────────
     elif validation == "ods_template":
         suffix = input_path.suffix.lower()
-        if db_type == DatabaseType.GREENPLUM and suffix in {".xlsx", ".xls", ".xlsm"}:
+        if suffix in {".xlsx", ".xls", ".xlsm"}:
             try:
                 from manual_excel_loader.template import read_template_config, is_template
+                from manual_excel_loader.type_mapping import gp_to_ch
                 s = _get_stream()
                 if is_template(input_path, stream=s):
                     tmpl = read_template_config(input_path, stream=s)
                     dtypes = dict(tmpl.dtypes) if tmpl.dtypes else None
-                    if dtypes:
-                        log.info(
-                            "ods_template: получены типы %d колонок из klad_config", len(dtypes)
-                        )
-                    else:
+                    if not dtypes:
                         raise ValueError("klad_config не содержит типов")
+                    # Типы в klad_config всегда в GP-нотации.
+                    # Для не-GP баз переводим в нативные типы целевой БД.
+                    if db_type not in (DatabaseType.GREENPLUM, DatabaseType.POSTGRES):
+                        dtypes = {col: gp_to_ch(t) for col, t in dtypes.items()}
+                        log.info(
+                            "ods_template: типы переведены из GP-нотации для %s", db_type.value
+                        )
+                    log.info(
+                        "ods_template: получены типы %d колонок из klad_config", len(dtypes)
+                    )
                 else:
                     raise ValueError("Файл не является шаблоном (нет листа klad_config)")
             except Exception as exc:
@@ -396,9 +403,8 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
                 dtypes = _run_inference(input_path, params, db_type, stream=_get_stream())
         else:
             log.warning(
-                "ods_template применим только к GP + Excel. "
-                "db_type=%s, ext=%s → инференс.",
-                db_type.value,
+                "ods_template применим только к Excel-файлам. "
+                "ext=%s → инференс.",
                 input_path.suffix,
             )
             dtypes = _run_inference(input_path, params, db_type, stream=_get_stream())

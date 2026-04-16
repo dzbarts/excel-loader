@@ -149,6 +149,8 @@ _GP_VALIDATORS: dict[str, Callable[[Any], CellResult]] = {
     "bigserial":   lambda v: validate_integer(v, 1, 9_223_372_036_854_775_807),
 
     "real":             lambda v: validate_float(v, -3.4e38, 3.4e38),
+    "float":            lambda v: validate_float(v, -1.7e308, 1.7e308),  # alias double precision
+    "double":           lambda v: validate_float(v, -1.7e308, 1.7e308),  # alias double precision
     "double precision": lambda v: validate_float(v, -1.7e308, 1.7e308),
 
     # decimal/numeric/varchar/char — через regex в get_validator
