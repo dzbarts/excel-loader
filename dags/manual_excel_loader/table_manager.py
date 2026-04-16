@@ -93,11 +93,13 @@ def _prepare_psql(
     if export_mode == "append":
         if create_ddl:
             _psql_create_if_not_exists(conn, create_ddl, scheme, table, tag)
+        conn.rollback()  # закрыть транзакцию от SELECT в _psql_create_if_not_exists
         conn.autocommit = True
 
     elif export_mode == "truncate_load":
         if create_ddl:
             _psql_create_if_not_exists(conn, create_ddl, scheme, table, tag)
+        conn.rollback()  # закрыть транзакцию от SELECT в _psql_create_if_not_exists
         conn.autocommit = False
         cur = conn.cursor()
         cur.execute(f'TRUNCATE TABLE "{scheme}"."{table}"')

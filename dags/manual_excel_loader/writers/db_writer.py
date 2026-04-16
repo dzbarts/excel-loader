@@ -103,7 +103,7 @@ def _load_copy(
         conn.autocommit = False
 
     cols = ", ".join(f'"{h}"' for h in headers)
-    copy_sql = f'COPY "{scheme}"."{table}" ({cols}) FROM STDIN WITH (FORMAT CSV, NULL "")'
+    copy_sql = f"COPY \"{scheme}\".\"{table}\" ({cols}) FROM STDIN WITH (FORMAT CSV, NULL '')"
 
     total = 0
 

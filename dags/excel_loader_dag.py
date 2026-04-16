@@ -33,10 +33,15 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+_dags = next((p for p in sys.path if p.endswith("/dags")), None)
+if _dags:
+    sys.path.insert(0, os.path.join(_dags, "cf", "cf_excel"))
 
 from airflow.decorators import dag, task
 from airflow.models.param import Param

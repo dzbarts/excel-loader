@@ -81,6 +81,7 @@ def write_smb_file_stream(
         smb_file:    Имя файла.
         file_obj:    Бинарный файловый объект с методом read() (pipe, BytesIO и т.п.).
     """
+    import socket
 
     from airflow.hooks.base import BaseHook
     from smb.SMBConnection import SMBConnection
@@ -90,7 +91,7 @@ def write_smb_file_stream(
     conn = SMBConnection(
         username=c.login,
         password=c.password,
-        my_name="",
+        my_name=socket.gethostname(),
         remote_name=remote_name,
         domain=_SMB_DOMAIN,
         use_ntlm_v2=True,
@@ -98,7 +99,7 @@ def write_smb_file_stream(
     )
     conn.connect(host, 445)
     try:
-        parts = [p.strip("/\\") for p in [smb_dir, smb_file] if p and p.strip("/\\")]
+        parts = [p.replace("\\", "/").strip("/") for p in [smb_dir, smb_file] if p and p.strip("/\\")]
         path = "/" + "/".join(parts)
         conn.storeFile(share, path, file_obj)
     finally:
@@ -122,6 +123,7 @@ def get_smb_file_bytes(
         smb_file:    Имя файла.
     """
     import io
+    import socket
 
     from airflow.hooks.base import BaseHook
     from smb.SMBConnection import SMBConnection
@@ -131,7 +133,7 @@ def get_smb_file_bytes(
     conn = SMBConnection(
         username=c.login,
         password=c.password,
-        my_name="",
+        my_name=socket.gethostname(),
         remote_name=remote_name,
         domain=_SMB_DOMAIN,
         use_ntlm_v2=True,
@@ -139,7 +141,7 @@ def get_smb_file_bytes(
     )
     conn.connect(host, 445)
     try:
-        parts = [p.strip("/\\") for p in [smb_dir, smb_file] if p and p.strip("/\\")]
+        parts = [p.replace("\\", "/").strip("/") for p in [smb_dir, smb_file] if p and p.strip("/\\")]
         path = "/" + "/".join(parts)
         buf = io.BytesIO()
         conn.retrieveFile(share, path, buf)
