@@ -22,27 +22,32 @@ from .readers import SheetData
 
 log = logging.getLogger(__name__)
 
-SAMPLE_SIZE = 200  # строк для анализа на колонку
-
-
 # ── Приоритет типов: от более специфичного к менее специфичному ──────────────
 # Если в колонке есть хоть одно float — тип float, даже если остальные int.
 # Если есть строка, которую нельзя привести к числу — text/String.
 
-def infer_types(sheet_data: SheetData, db_type: DatabaseType) -> dict[str, str]:
-    """Инференс типов по первым SAMPLE_SIZE строкам данных."""
+def infer_types(
+    sheet_data: SheetData,
+    db_type: DatabaseType,
+    sample_size: int | None = None,
+) -> dict[str, str]:
+    """Инференс типов по данным файла.
+
+    sample_size — максимальное число строк для анализа; None означает весь документ.
+    """
     headers = list(sheet_data.headers)
     col_values: dict[str, list[Any]] = {h: [] for h in headers}
 
     count = 0
     for row in sheet_data.rows:
-        if count >= SAMPLE_SIZE:
+        if sample_size is not None and count >= sample_size:
             break
         for header, value in zip(headers, row):
             if value is not None:
                 col_values[header].append(value)
         count += 1
 
+    log.info("inference: прочитано %d строк (sample_size=%s)", count, sample_size)
     result = {}
     for header in headers:
         values = col_values[header]

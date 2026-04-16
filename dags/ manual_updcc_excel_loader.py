@@ -99,11 +99,15 @@ DAG_PARAMS = {
     ),
     "skip_rows": Param(default=0, type="integer", description="[2. Чтение] Пропустить N строк сверху перед заголовком"),
     "skip_cols": Param(default=0, type="integer", description="[2. Чтение] Пропустить N колонок слева"),
-    "max_row":   Param(default=None, type=["integer", "null"], description="[2. Чтение] Максимальное число строк для загрузки (без учёта заголовка)"),
+    "max_row":          Param(default=None, type=["integer", "null"], description="[2. Чтение] Максимальное число строк для загрузки (без учёта заголовка)"),
+    "inference_sample": Param(default=None, type=["integer", "null"], description="[2. Чтение] Число строк для инференса типов колонок. По умолчанию — весь документ."),
+    "exclude_columns":  Param(default="", type=["string", "null"], description="[2. Чтение] Колонки, исключённые из DDL и загрузки. Перечислить через запятую, например: col_a, col_b"),
     "delimiter": Param(default=",", type="string", description="[2. Чтение] Разделитель колонок (только для CSV/TSV)"),
     "encoding_input": Param(
         default="utf-8",
-        type="string",
+        enum=["utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be",
+              "cp1251", "cp866", "koi8-r", "koi8-u", "iso-8859-5",
+              "cp1252", "latin-1", "ascii"],
         description="[2. Чтение] Кодировка входящего файла (только для CSV/TSV/SQL; для Excel игнорируется).",
     ),
     "is_strip": Param(
@@ -145,9 +149,9 @@ DAG_PARAMS = {
         ),
     ),
     "wf_load_idn": Param(
-        default=None,
-        type=["string", "null"],
-        description="[4. Загрузка] Идентификатор потока загрузки (wf_load_idn) — добавляется как отдельная колонка",
+        default=False,
+        type="boolean",
+        description="[4. Загрузка] Добавить колонку wf_load_idn с именем исходного файла",
     ),
     # ── 5. Валидация ──────────────────────────────────────────────────────────
     "validation": Param(
@@ -186,14 +190,14 @@ DAG_PARAMS = {
             "При False ошибки фиксируются только в логах Airflow."
         ),
     ),
-    "validation_report_include_values": Param(
-        default=False,
-        type="boolean",
-        description=(
-            "[5. Валидация] Включить примеры значений ячеек в TXT-отчёт. "
-            "Внимание: отчёт может содержать чувствительные данные."
-        ),
-    ),
+    # "validation_report_include_values": Param(
+    #     default=False,
+    #     type="boolean",
+    #     description=(
+    #         "[5. Валидация] Включить примеры значений ячеек в TXT-отчёт. "
+    #         "Внимание: отчёт может содержать чувствительные данные."
+    #     ),
+    # ),
     # ── 6. Вывод (to_sql / to_csv) ────────────────────────────────────────────
     "output_smb_host": Param(
         default="",
@@ -217,7 +221,9 @@ DAG_PARAMS = {
     ),
     "encoding_output": Param(
         default="utf-8",
-        type="string",
+        enum=["utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be",
+              "cp1251", "cp866", "koi8-r", "koi8-u", "iso-8859-5",
+              "cp1252", "latin-1", "ascii"],
         description="[6. Вывод] Кодировка выходного SQL/CSV-файла.",
     ),
 }
@@ -364,9 +370,31 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
             log.info("BD: получены типы %d колонок из %s.%s", len(dtypes), scheme, table)
         else:
             log.info(
-                "BD: таблица %s.%s не найдена → будет инференс + создание", scheme, table
+                "BD: таблица %s.%s не найдена → будет создание", scheme, table
             )
-            dtypes = _run_inference(input_path, params, db_type, stream=_get_stream())
+            # Для шаблонных файлов берём типы из klad_config, а не из инференса:
+            # _run_inference не знает про структуру шаблона и читает не тот лист.
+            suffix = input_path.suffix.lower()
+            if suffix in {".xlsx", ".xls", ".xlsm"}:
+                try:
+                    from manual_excel_loader.template import read_template_config, is_template
+                    from manual_excel_loader.type_mapping import gp_to_ch
+                    s = _get_stream()
+                    if is_template(input_path, stream=s):
+                        tmpl = read_template_config(input_path, stream=s)
+                        dtypes = dict(tmpl.dtypes) if tmpl.dtypes else None
+                        if dtypes and db_type not in (DatabaseType.GREENPLUM, DatabaseType.POSTGRES):
+                            dtypes = {col: gp_to_ch(t) for col, t in dtypes.items()}
+                        log.info(
+                            "BD fallback: шаблон — типы из klad_config (%d колонок)", len(dtypes or {})
+                        )
+                    else:
+                        dtypes = _run_inference(input_path, params, db_type, stream=s)
+                except Exception as exc:
+                    log.warning("BD fallback: klad_config недоступен (%s) → инференс", exc)
+                    dtypes = _run_inference(input_path, params, db_type, stream=_get_stream())
+            else:
+                dtypes = _run_inference(input_path, params, db_type, stream=_get_stream())
 
     # ── ods_template: из klad_config ─────────────────────────────────────────
     elif validation == "ods_template":
@@ -420,6 +448,13 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
         dtypes = None
         log.info("validation=none: валидация пропущена")
 
+    # ── Исключаем колонки из dtypes (и из DDL) ──────────────────────────────
+    raw_exclude = params.get("exclude_columns", "") or ""
+    exclude_set = frozenset(c.strip() for c in raw_exclude.split(",") if c.strip())
+    if dtypes and exclude_set:
+        dtypes = {col: t for col, t in dtypes.items() if col not in exclude_set}
+        log.info("exclude_columns: исключены %s, осталось %d колонок", exclude_set, len(dtypes))
+
     # ── Генерируем create_ddl если нужна загрузка в БД и таблицы нет ─────────
     if export in _DB_EXPORT_MODES and dtypes is not None:
         if not tbl_exists or export == "via_backup":
@@ -427,7 +462,10 @@ def _resolve_dtypes_fn(run_params: dict[str, Any], **context: Any) -> dict[str, 
             from manual_excel_loader.enums import TimestampField
             ts = params.get("timestamp")
             ts_field = TimestampField(ts) if ts and ts != "none" else None
-            create_ddl = generate_ddl(dtypes, scheme, table, db_type, ts_field)
+            create_ddl = generate_ddl(
+                dtypes, scheme, table, db_type, ts_field,
+                wf_load_idn=bool(params.get("wf_load_idn", False)),
+            )
             log.info("DDL сгенерирован для %s.%s", scheme, table)
 
     return {
@@ -456,7 +494,9 @@ def _run_inference(
         encoding=params.get("encoding_input", "utf-8"),
         delimiter=params.get("delimiter", ","),
     )
-    dtypes = infer_types(sheet, db_type)
+    raw_sample = params.get("inference_sample")
+    sample_size = int(raw_sample) if raw_sample else None
+    dtypes = infer_types(sheet, db_type, sample_size=sample_size)
     log.info("inference: определены типы %d колонок", len(dtypes))
     return dtypes
 
@@ -509,6 +549,9 @@ def _load_file_fn(
         )
         return _smb_path_str(filename)
 
+    raw_exclude = params.get("exclude_columns", "") or ""
+    exclude_columns = frozenset(c.strip() for c in raw_exclude.split(",") if c.strip())
+
     # Базовый конфиг без stream — используется для pre-validation и как шаблон.
     cfg = LoaderConfig(
         input_file=input_path,
@@ -527,12 +570,13 @@ def _load_file_fn(
         encoding_output=encoding_out,
         is_strip=bool(params.get("is_strip", False)),
         max_row=params.get("max_row"),
-        wf_load_idn=params.get("wf_load_idn"),
+        wf_load_idn=bool(params.get("wf_load_idn", False)),
         timestamp=(
             TimestampField(params["timestamp"]) if params.get("timestamp") != "none" else None
         ),
         dtypes=dtype_info.get("dtypes"),
         validation_report_include_values=bool(params.get("validation_report_include_values", False)),
+        exclude_columns=exclude_columns,
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -671,6 +715,9 @@ def _load_db_fn(
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
+        raw_exclude = params.get("exclude_columns", "") or ""
+        exclude_columns = frozenset(c.strip() for c in raw_exclude.split(",") if c.strip())
+
         cfg = LoaderConfig(
             input_file=Path(params["input_file"]),
             input_stream=_get_smb_stream(params),
@@ -687,13 +734,14 @@ def _load_db_fn(
             encoding_output=params.get("encoding_output", "utf-8"),
             is_strip=bool(params.get("is_strip", False)),
             max_row=params.get("max_row"),
-            wf_load_idn=params.get("wf_load_idn"),
+            wf_load_idn=bool(params.get("wf_load_idn", False)),
             timestamp=(
                 TimestampField(params["timestamp"]) if params.get("timestamp") != "none" else None
             ),
             dtypes=dtypes,
             validation_report_dir=tmp_path,
             validation_report_include_values=bool(params.get("validation_report_include_values", False)),
+            exclude_columns=exclude_columns,
         )
 
         # ── RAISE: валидация ДО подготовки таблицы и вставки ─────────────────────
@@ -791,7 +839,7 @@ def _report_fn(result: dict[str, Any], **context: Any) -> None:
 # ── DAG ───────────────────────────────────────────────────────────────────────
 
 @dag(
-    dag_id="excel_loader",
+    dag_id="manual_updcc_excel_loader",
     description="Загрузка Excel/CSV/SQL → GP/CH с валидацией данных",
     schedule=None,
     start_date=datetime(2024, 1, 1),

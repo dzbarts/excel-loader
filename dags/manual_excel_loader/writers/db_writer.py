@@ -166,11 +166,35 @@ def _load_ch(
     cols = ", ".join(f"`{h}`" for h in headers)
     sql = f"INSERT INTO `{scheme}`.`{table}` ({cols}) VALUES"
 
+    # Определяем String-колонки по схеме CH — clickhouse-driver не приводит
+    # int/float к str автоматически, поэтому делаем это сами перед вставкой.
+    ch_col_types = {
+        name: type_str
+        for name, type_str in client.execute(
+            "SELECT name, type FROM system.columns "
+            "WHERE database = %(db)s AND table = %(tbl)s",
+            {"db": scheme, "tbl": table},
+        )
+    }
+    string_col_indices = {
+        i for i, h in enumerate(headers)
+        if "String" in ch_col_types.get(h, "")
+    }
+
+    def _coerce(row: tuple) -> tuple:
+        if not string_col_indices:
+            return row
+        lst = list(row)
+        for i in string_col_indices:
+            if lst[i] is not None and not isinstance(lst[i], str):
+                lst[i] = str(lst[i])
+        return tuple(lst)
+
     total = 0
     batch: list[tuple] = []
 
     for row in rows:
-        batch.append(tuple(row))
+        batch.append(_coerce(row))
         if len(batch) >= batch_size:
             client.execute(sql, batch)
             total += len(batch)

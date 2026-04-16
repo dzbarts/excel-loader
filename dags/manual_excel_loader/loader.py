@@ -264,7 +264,11 @@ def _append_extra_columns(
     """
     row = list(row)
     if config.timestamp and config.timestamp.value not in source_headers:
-        row.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        now = datetime.now()
+        if config.db_type == DatabaseType.CLICKHOUSE:
+            row.append(now)
+        else:
+            row.append(now.strftime("%Y-%m-%d %H:%M:%S"))
     if config.wf_load_idn:
         row.append(config.input_file.name)
     return tuple(row)
@@ -305,6 +309,7 @@ class _Pipeline:
     key_columns: frozenset[str] | None
     needs_validation: bool
     validation_result: FileValidationResult
+    excluded_final_indices: frozenset[int]
 
 
 def _build_pipeline(config: LoaderConfig) -> _Pipeline:
@@ -327,6 +332,12 @@ def _build_pipeline(config: LoaderConfig) -> _Pipeline:
         headers.append(effective_config.timestamp.value)
     if effective_config.wf_load_idn:
         headers.append("wf_load_idn")
+
+    exclude = effective_config.exclude_columns
+    excluded_final_indices: frozenset[int] = frozenset()
+    if exclude:
+        excluded_final_indices = frozenset(i for i, h in enumerate(headers) if h in exclude)
+        headers = [h for h in headers if h not in exclude]
 
     validators: dict[str, _ValidatorFn] = {}
     headers_to_validate: list = []
@@ -353,6 +364,7 @@ def _build_pipeline(config: LoaderConfig) -> _Pipeline:
         key_columns=tmpl.key_columns if tmpl is not None else None,
         needs_validation=needs_validation,
         validation_result=FileValidationResult(),
+        excluded_final_indices=excluded_final_indices,
     )
 
 
@@ -379,6 +391,8 @@ def _iter_rows(p: _Pipeline, rows_skipped: list[int]) -> Iterator:
         if p.tmpl is not None and p.tmpl.fixed_values:
             row = _insert_fixed_values(row, p.tmpl.headers, p.tmpl.fixed_values)
         row = _append_extra_columns(row, p.source_headers, p.effective_config)
+        if p.excluded_final_indices:
+            row = tuple(v for i, v in enumerate(row) if i not in p.excluded_final_indices)
         yield row
 
 

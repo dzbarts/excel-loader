@@ -11,8 +11,8 @@ from .enums import DatabaseType, ErrorMode, DumpType, TimestampField
 # encoding_output — применяется при записи SQL/CSV-файлов.
 # Для Excel (.xlsx) кодировка не нужна: openpyxl читает бинарный формат.
 SUPPORTED_ENCODINGS: frozenset[str] = frozenset({
-    "utf-8", "utf-16", "utf-16-le", "utf-16-be",
-    "ascii", "latin1", "cp1252", "cp1251", "cp866",
+    "utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be",
+    "ascii", "latin-1", "latin1", "cp1252", "cp1251", "cp866",
     "koi8-r", "koi8-u", "iso-8859-5",
     "gbk", "big5", "shift_jis", "euc-jp", "euc-kr",
 })
@@ -52,9 +52,13 @@ class LoaderConfig:
     delimiter: str = ","
     timestamp: TimestampField | None = None
     max_row: int | None = None
-    wf_load_idn: str | None = None
+    wf_load_idn: bool = False
     is_strip: bool = False
     set_empty_str_to_null: bool = True
+
+    # Колонки, которые нужно исключить из DDL и из загружаемых данных.
+    # Принимается как frozenset имён; парсится из строки через запятую на уровне DAG.
+    exclude_columns: frozenset[str] = field(default_factory=frozenset)
 
     # dict[col_name, type_str] — порядок столбцов в DDL может не совпадать
     # с порядком в Excel. Получить через parse_ddl() или передать вручную:
