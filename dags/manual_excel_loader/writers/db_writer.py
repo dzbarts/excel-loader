@@ -166,8 +166,8 @@ def _load_ch(
     cols = ", ".join(f"`{h}`" for h in headers)
     sql = f"INSERT INTO `{scheme}`.`{table}` ({cols}) VALUES"
 
-    # Определяем String-колонки по схеме CH — clickhouse-driver не приводит
-    # int/float к str автоматически, поэтому делаем это сами перед вставкой.
+    # Определяем типы колонок по схеме CH и строим таблицу приведений.
+    # clickhouse-driver не приводит типы автоматически, поэтому делаем сами.
     ch_col_types = {
         name: type_str
         for name, type_str in client.execute(
@@ -176,18 +176,35 @@ def _load_ch(
             {"db": scheme, "tbl": table},
         )
     }
-    string_col_indices = {
-        i for i, h in enumerate(headers)
-        if "String" in ch_col_types.get(h, "")
-    }
+
+    string_col_indices: set[int] = set()
+    int_col_indices:    set[int] = set()
+    float_col_indices:  set[int] = set()
+
+    for i, h in enumerate(headers):
+        ch_type = ch_col_types.get(h, "")
+        # убираем Nullable(...) обёртку для сравнения
+        inner = ch_type.replace("Nullable(", "").rstrip(")")
+        if "String" in inner or "UUID" in inner:
+            string_col_indices.add(i)
+        elif "Int" in inner or inner == "Bool":
+            int_col_indices.add(i)
+        elif "Float" in inner or "Decimal" in inner:
+            float_col_indices.add(i)
 
     def _coerce(row: tuple) -> tuple:
-        if not string_col_indices:
+        if not (string_col_indices or int_col_indices or float_col_indices):
             return row
         lst = list(row)
         for i in string_col_indices:
             if lst[i] is not None and not isinstance(lst[i], str):
                 lst[i] = str(lst[i])
+        for i in int_col_indices:
+            if lst[i] is not None and not isinstance(lst[i], int):
+                lst[i] = int(float(lst[i]))
+        for i in float_col_indices:
+            if lst[i] is not None and not isinstance(lst[i], float):
+                lst[i] = float(lst[i])
         return tuple(lst)
 
     total = 0
