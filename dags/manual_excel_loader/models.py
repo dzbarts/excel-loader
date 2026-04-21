@@ -60,6 +60,12 @@ class LoaderConfig:
     # Принимается как frozenset имён; парсится из строки через запятую на уровне DAG.
     exclude_columns: frozenset[str] = field(default_factory=frozenset)
 
+    # Обрезать значения date/datetime-колонок до допустимого диапазона целевой БД.
+    # Актуально при переносе данных между БД с разными диапазонами дат
+    # (например, GP 0001-01-01 → CH Date 1970-01-01).
+    # Границы определяются автоматически по db_type и типу каждой колонки из dtypes.
+    clip_dates: bool = False
+
     # dict[col_name, type_str] — порядок столбцов в DDL может не совпадать
     # с порядком в Excel. Получить через parse_ddl() или передать вручную:
     # {"id": "integer", "name": "text"}.

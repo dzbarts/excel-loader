@@ -208,14 +208,17 @@ def _prepare_ch(
         if create_ddl:
             _ch_create_if_not_exists(client, create_ddl, scheme, table)
         temp = f"{table}_temp"
-        # Создаём копию структуры + данных как псевдобэкап
-        client.execute(
-            f"CREATE TABLE `{scheme}`.`{temp}` AS `{scheme}`.`{table}`"
-        )
-        client.execute(
-            f"INSERT INTO `{scheme}`.`{temp}` SELECT * FROM `{scheme}`.`{table}`"
-        )
-        client.execute(f"TRUNCATE TABLE `{scheme}`.`{table}`")
+        try:
+            client.execute(
+                f"CREATE TABLE `{scheme}`.`{temp}` AS `{scheme}`.`{table}`"
+            )
+            client.execute(
+                f"INSERT INTO `{scheme}`.`{temp}` SELECT * FROM `{scheme}`.`{table}`"
+            )
+            client.execute(f"TRUNCATE TABLE `{scheme}`.`{table}`")
+        except Exception:
+            client.execute(f"DROP TABLE IF EXISTS `{scheme}`.`{temp}`")
+            raise
         ctx["temp_table"] = temp
         log.info(
             "CH: truncate_load подготовлен, псевдобэкап: %s.%s", scheme, temp
@@ -261,18 +264,27 @@ def _finalize_ch(ctx: dict, success: bool) -> None:
 
     if export_mode == "truncate_load":
         temp = ctx.get("temp_table")
+        if not temp:
+            return
         if success:
             client.execute(f"DROP TABLE IF EXISTS `{scheme}`.`{temp}`")
             log.info("CH: truncate_load завершён, temp-таблица удалена")
         else:
-            client.execute(
-                f"INSERT INTO `{scheme}`.`{table}` "
-                f"SELECT * FROM `{scheme}`.`{temp}`"
-            )
-            client.execute(f"DROP TABLE IF EXISTS `{scheme}`.`{temp}`")
-            log.warning(
-                "CH: truncate_load псевдооткат из %s.%s", scheme, temp
-            )
+            try:
+                client.execute(
+                    f"INSERT INTO `{scheme}`.`{table}` "
+                    f"SELECT * FROM `{scheme}`.`{temp}`"
+                )
+                client.execute(f"DROP TABLE IF EXISTS `{scheme}`.`{temp}`")
+                log.warning(
+                    "CH: truncate_load псевдооткат из %s.%s", scheme, temp
+                )
+            except Exception as exc:
+                log.error(
+                    "CH: ошибка при откате truncate_load — данные сохранены в "
+                    "%s.%s, требуется ручное восстановление: %s",
+                    scheme, temp, exc,
+                )
 
     elif export_mode == "via_backup" and not success:
         backup = ctx.get("backup_table")

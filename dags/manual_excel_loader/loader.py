@@ -310,6 +310,7 @@ class _Pipeline:
     needs_validation: bool
     validation_result: FileValidationResult
     excluded_final_indices: frozenset[int]
+    date_clipper: Callable | None = None
 
 
 def _build_pipeline(config: LoaderConfig) -> _Pipeline:
@@ -353,6 +354,13 @@ def _build_pipeline(config: LoaderConfig) -> _Pipeline:
             effective_config.db_type,
         )
 
+    date_clipper = None
+    if config.clip_dates and effective_config.dtypes:
+        from .date_clipper import build_date_clipper
+        date_clipper = build_date_clipper(
+            effective_config.db_type, effective_config.dtypes, headers
+        )
+
     return _Pipeline(
         effective_config=effective_config,
         sheet=sheet,
@@ -365,6 +373,7 @@ def _build_pipeline(config: LoaderConfig) -> _Pipeline:
         needs_validation=needs_validation,
         validation_result=FileValidationResult(),
         excluded_final_indices=excluded_final_indices,
+        date_clipper=date_clipper,
     )
 
 
@@ -393,6 +402,8 @@ def _iter_rows(p: _Pipeline, rows_skipped: list[int]) -> Iterator:
         row = _append_extra_columns(row, p.source_headers, p.effective_config)
         if p.excluded_final_indices:
             row = tuple(v for i, v in enumerate(row) if i not in p.excluded_final_indices)
+        if p.date_clipper is not None:
+            row = p.date_clipper(row)
         yield row
 
 

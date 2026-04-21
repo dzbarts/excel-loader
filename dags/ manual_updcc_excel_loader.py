@@ -137,6 +137,16 @@ DAG_PARAMS = {
         ),
     ),
     "batch_size": Param(default=10000, type="integer", description="[4. Загрузка] Размер батча при вставке в БД или записи в файл"),
+    "clip_dates": Param(
+        default=False,
+        type="boolean",
+        description=(
+            "[4. Загрузка] Обрезать значения date/datetime-колонок до допустимого диапазона "
+            "целевой БД. Актуально при переносе данных из GP (0001-01-01) в ClickHouse "
+            "(Date: 1970-01-01 – 2149-06-06; DateTime: 1970-01-01 – 2106-02-07). "
+            "Границы определяются автоматически по db_type и типу каждой колонки."
+        ),
+    ),
     "timestamp": Param(
         default="none",
         type="string",
@@ -577,6 +587,7 @@ def _load_file_fn(
         dtypes=dtype_info.get("dtypes"),
         validation_report_include_values=bool(params.get("validation_report_include_values", False)),
         exclude_columns=exclude_columns,
+        clip_dates=bool(params.get("clip_dates", False)),
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -742,6 +753,7 @@ def _load_db_fn(
             validation_report_dir=tmp_path,
             validation_report_include_values=bool(params.get("validation_report_include_values", False)),
             exclude_columns=exclude_columns,
+            clip_dates=bool(params.get("clip_dates", False)),
         )
 
         # ── RAISE: валидация ДО подготовки таблицы и вставки ─────────────────────
@@ -776,15 +788,14 @@ def _load_db_fn(
         else:
             headers, rows_iter, validation_result = load_rows(cfg)
 
-    # ── Подготовка таблицы ────────────────────────────────────────────────────
-    ctx = prepare(scheme, table, db_type, export, create_ddl)
-    gp_conn   = ctx.get("conn")
-    ch_client = ctx.get("client")
-
-    # ── Вставка в БД ─────────────────────────────────────────────────────────
+    # ── Подготовка таблицы + вставка в БД ────────────────────────────────────
+    ctx: dict | None = None
     rows_written = 0
     success = False
     try:
+        ctx = prepare(scheme, table, db_type, export, create_ddl)
+        gp_conn   = ctx.get("conn")
+        ch_client = ctx.get("client")
         writer = DbWriter(DbWriterConfig(
             db_type=db_type,
             scheme_name=scheme,
@@ -799,7 +810,8 @@ def _load_db_fn(
         log.error("Ошибка при вставке данных: %s", exc)
         raise
     finally:
-        finalize(ctx, success)
+        if ctx is not None:
+            finalize(ctx, success)
 
     # ── Проверка результатов валидации (для COERCE / VERIFY) ──────────────────
     has_errors = not validation_result.is_valid
